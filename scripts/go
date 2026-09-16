@@ -1,0 +1,19 @@
+#!/usr/bin/env sh
+set -eu
+
+SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+PROJECT_DIR=$(CDPATH= cd -- "$SCRIPT_DIR/.." && pwd)
+GO_BIN="$PROJECT_DIR/.tools/go1.26.8/bin/go"
+
+if [ ! -x "$GO_BIN" ]; then
+  echo "local Go toolchain not found: $GO_BIN" >&2
+  exit 1
+fi
+
+mkdir -p "$PROJECT_DIR/.cache/go-build" "$PROJECT_DIR/.cache/go-mod" "$PROJECT_DIR/.cache/go-path"
+
+GOTOOLCHAIN=local \
+GOCACHE="$PROJECT_DIR/.cache/go-build" \
+GOMODCACHE="$PROJECT_DIR/.cache/go-mod" \
+GOPATH="$PROJECT_DIR/.cache/go-path" \
+exec "$GO_BIN" "$@"

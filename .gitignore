@@ -1,0 +1,6 @@
+.DS_Store
+.tools/
+.cache/
+/bin/
+/data/
+*.log
