@@ -1,0 +1,31 @@
+#!/usr/bin/env sh
+set -eu
+
+SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+PROJECT_DIR=$(CDPATH= cd -- "$SCRIPT_DIR/.." && pwd)
+OPENCODE_BIN="$PROJECT_DIR/.tools/opencode/1.18.31/opencode"
+
+if [ ! -x "$OPENCODE_BIN" ]; then
+  echo "local OpenCode not found: $OPENCODE_BIN" >&2
+  exit 1
+fi
+
+mkdir -p \
+  "$PROJECT_DIR/.cache/opencode/config" \
+  "$PROJECT_DIR/.cache/opencode/data" \
+  "$PROJECT_DIR/.cache/opencode/cache" \
+  "$PROJECT_DIR/.cache/opencode/state"
+
+# OpenCode's native Google provider uses GOOGLE_GENERATIVE_AI_API_KEY. Accept the
+# shorter Gemini name as a local convenience without persisting either value.
+if [ -n "${GEMINI_API_KEY:-}" ] && [ -z "${GOOGLE_GENERATIVE_AI_API_KEY:-}" ]; then
+  GOOGLE_GENERATIVE_AI_API_KEY=$GEMINI_API_KEY
+  export GOOGLE_GENERATIVE_AI_API_KEY
+fi
+
+XDG_CONFIG_HOME="$PROJECT_DIR/.cache/opencode/config" \
+XDG_DATA_HOME="$PROJECT_DIR/.cache/opencode/data" \
+XDG_CACHE_HOME="$PROJECT_DIR/.cache/opencode/cache" \
+XDG_STATE_HOME="$PROJECT_DIR/.cache/opencode/state" \
+OPENCODE_DISABLE_AUTOUPDATE=true \
+exec "$OPENCODE_BIN" "$@"

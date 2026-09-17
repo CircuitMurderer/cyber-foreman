@@ -1,6 +1,9 @@
 package domain
 
-import "time"
+import (
+	"encoding/json"
+	"time"
+)
 
 type TaskStatus string
 
@@ -32,12 +35,18 @@ type Task struct {
 type EventType string
 
 const (
-	EventTaskCreated  EventType = "task.created"
-	EventTaskState    EventType = "task.state"
-	EventAgentStarted EventType = "agent.started"
-	EventAgentOutput  EventType = "agent.output"
-	EventAgentError   EventType = "agent.error"
-	EventAgentExited  EventType = "agent.exited"
+	EventTaskCreated        EventType = "task.created"
+	EventTaskState          EventType = "task.state"
+	EventAgentStarted       EventType = "agent.started"
+	EventAgentOutput        EventType = "agent.output"
+	EventAgentError         EventType = "agent.error"
+	EventAgentExited        EventType = "agent.exited"
+	EventAgentSessionUpdate EventType = "agent.session_update"
+	EventAgentStderr        EventType = "agent.stderr"
+	EventAgentDisconnected  EventType = "agent.disconnected"
+	EventAgentPermission    EventType = "agent.permission_requested"
+	EventAgentInterrupt     EventType = "agent.interrupt_requested"
+	EventAgentFollowUp      EventType = "agent.follow_up_started"
 )
 
 type Event struct {
@@ -62,4 +71,26 @@ type TaskStateData struct {
 	From   TaskStatus `json:"from"`
 	To     TaskStatus `json:"to"`
 	Reason string     `json:"reason,omitempty"`
+}
+
+type AgentSessionUpdateData struct {
+	Update json.RawMessage `json:"update"`
+}
+
+type AgentStderrData struct {
+	Line string `json:"line"`
+}
+
+type AgentDisconnectedData struct {
+	Error string `json:"error,omitempty"`
+}
+
+type PermissionOptionData struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+	Kind string `json:"kind"`
+}
+
+type AgentPermissionData struct {
+	Options []PermissionOptionData `json:"options"`
 }

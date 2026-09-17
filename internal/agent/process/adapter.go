@@ -98,6 +98,18 @@ func (a *Adapter) Events(_ context.Context, sessionID string) (<-chan domain.Eve
 	return s.events, nil
 }
 
+func (a *Adapter) Prompt(context.Context, string, agent.PromptRequest) (agent.PromptResult, error) {
+	return agent.PromptResult{}, agent.ErrUnsupported
+}
+
+func (a *Adapter) Cancel(ctx context.Context, sessionID string) error {
+	return a.Stop(ctx, sessionID)
+}
+
+func (a *Adapter) SetConfigOption(context.Context, string, agent.ConfigOption) error {
+	return agent.ErrUnsupported
+}
+
 func (a *Adapter) Stop(ctx context.Context, sessionID string) error {
 	a.mu.RLock()
 	s, ok := a.sessions[sessionID]
