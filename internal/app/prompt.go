@@ -28,7 +28,7 @@ func (s *Service) consumePrompt(ctx context.Context, taskID string, events <-cha
 		runtime.cancel()
 		stopCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 		defer cancel()
-		_ = s.adapter.Stop(stopCtx, runtime.sessionID)
+		_ = runtime.adapter.Stop(stopCtx, runtime.sessionID)
 		s.mu.Lock()
 		delete(s.runtimes, taskID)
 		s.mu.Unlock()
@@ -45,7 +45,7 @@ func (s *Service) consumePrompt(ctx context.Context, taskID string, events <-cha
 		promptActive = true
 		snapshot.LastProgressAt = time.Now().UTC()
 		go func() {
-			result, err := s.adapter.Prompt(ctx, runtime.sessionID, agent.PromptRequest{Text: text})
+			result, err := runtime.adapter.Prompt(ctx, runtime.sessionID, agent.PromptRequest{Text: text})
 			outcomes <- promptOutcome{result: result, err: err}
 		}()
 	}
@@ -61,7 +61,7 @@ func (s *Service) consumePrompt(ctx context.Context, taskID string, events <-cha
 
 	engine := supervisor.Engine{}
 	executor := supervisor.Executor{Publisher: s.bus}
-	performer := promptActionPerformer{adapter: s.adapter, sessionID: runtime.sessionID}
+	performer := promptActionPerformer{adapter: runtime.adapter, sessionID: runtime.sessionID}
 	sequence := 0
 	pendingFollowUp := ""
 	manualInterrupted := false
@@ -69,6 +69,31 @@ func (s *Service) consumePrompt(ctx context.Context, taskID string, events <-cha
 
 	for {
 		select {
+		case action := <-runtime.actions:
+			if action.kind != taskActionInterrupt || !promptActive || pendingFollowUp != "" {
+				action.result <- ErrActionUnavailable
+				continue
+			}
+			sequence++
+			decision := supervisor.Decision{
+				RuleID: "operator-interrupt", Action: supervisor.ActionCancelAndFollowUp,
+				Reason:    "operator interrupted the active agent turn",
+				Evidence:  []string{fmt.Sprintf("%s:operator-action:%d", taskID, sequence)},
+				DedupeKey: fmt.Sprintf("%s:operator-action:%d", taskID, sequence),
+			}
+			next, _, err := executor.Execute(ctx, snapshot, decision, performer)
+			if err != nil {
+				action.result <- err
+				continue
+			}
+			snapshot = next
+			pendingFollowUp = action.message
+			idleC = nil
+			s.bus.Publish(domain.Event{
+				TaskID: taskID, SessionID: runtime.sessionID, Type: domain.EventAgentInterrupt,
+				Timestamp: time.Now().UTC(), Data: map[string]string{"rule_id": decision.RuleID},
+			})
+			action.result <- nil
 		case event, open := <-events:
 			if !open {
 				if ctx.Err() == nil {

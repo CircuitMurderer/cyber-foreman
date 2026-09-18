@@ -22,9 +22,12 @@ import (
 var (
 	ErrTaskNotFound      = errors.New("task not found")
 	ErrInvalidTransition = errors.New("invalid task state transition")
+	ErrTaskNotRunning    = errors.New("task is not running")
+	ErrActionUnavailable = errors.New("task action is unavailable")
 )
 
 type StartTaskRequest struct {
+	Adapter       string              `json:"adapter,omitempty"`
 	Command       []string            `json:"command"`
 	Prompt        string              `json:"prompt,omitempty"`
 	Model         string              `json:"model,omitempty"`
@@ -41,9 +44,10 @@ type VerificationRequest struct {
 }
 
 type Service struct {
-	ctx     context.Context
-	adapter agent.Adapter
-	bus     *event.Bus
+	ctx            context.Context
+	adapters       *agent.Registry
+	defaultAdapter string
+	bus            *event.Bus
 
 	mu       sync.RWMutex
 	tasks    map[string]*domain.Task
@@ -51,8 +55,10 @@ type Service struct {
 }
 
 type taskRuntime struct {
+	adapter       agent.Adapter
 	sessionID     string
 	cancel        context.CancelFunc
+	actions       chan taskAction
 	verification  VerificationRequest
 	baseline      *verification.WorkspaceBaseline
 	prompt        string
@@ -60,35 +66,82 @@ type taskRuntime struct {
 	policy        supervisor.Policy
 }
 
+type taskAction struct {
+	kind    string
+	message string
+	result  chan error
+}
+
+const taskActionInterrupt = "interrupt"
+
 func NewService(ctx context.Context, adapter agent.Adapter, bus *event.Bus) *Service {
+	registry, err := agent.NewRegistry(adapter)
+	if err != nil {
+		panic(err)
+	}
+	return NewServiceWithRegistry(ctx, registry, adapter.Name(), bus)
+}
+
+func NewServiceWithRegistry(ctx context.Context, adapters *agent.Registry, defaultAdapter string, bus *event.Bus) *Service {
+	if adapters == nil {
+		panic("adapter registry is nil")
+	}
+	if bus == nil {
+		panic("event bus is nil")
+	}
 	return &Service{
-		ctx: ctx, adapter: adapter, bus: bus,
+		ctx: ctx, adapters: adapters, defaultAdapter: defaultAdapter, bus: bus,
 		tasks: make(map[string]*domain.Task), runtimes: make(map[string]taskRuntime),
 	}
 }
 
 func (s *Service) StartTask(req StartTaskRequest) (domain.Task, error) {
-	if (len(req.Command) == 0) == (req.Prompt == "") {
-		return domain.Task{}, errors.New("exactly one of command or prompt is required")
+	t, adapter, err := s.queueTask(req)
+	if err != nil {
+		return domain.Task{}, err
 	}
-	if req.Prompt != "" && !s.adapter.Capabilities().Prompt {
-		return domain.Task{}, errors.New("selected adapter does not support prompt tasks")
+	if err := s.startQueuedTask(t.ID, req, adapter); err != nil {
+		return domain.Task{}, err
+	}
+	return s.GetTask(t.ID)
+}
+
+// SubmitTask records a queued task and performs adapter startup asynchronously.
+// The REST control plane uses this so slow handshakes never delay task identity.
+func (s *Service) SubmitTask(req StartTaskRequest) (domain.Task, error) {
+	t, adapter, err := s.queueTask(req)
+	if err != nil {
+		return domain.Task{}, err
+	}
+	go func() { _ = s.startQueuedTask(t.ID, req, adapter) }()
+	return t, nil
+}
+
+func (s *Service) queueTask(req StartTaskRequest) (domain.Task, agent.Adapter, error) {
+	if (len(req.Command) == 0) == (req.Prompt == "") {
+		return domain.Task{}, nil, errors.New("exactly one of command or prompt is required")
+	}
+	adapterName := req.Adapter
+	if adapterName == "" {
+		adapterName = s.defaultAdapter
+	}
+	adapter, err := s.adapters.Get(adapterName)
+	if err != nil {
+		return domain.Task{}, nil, err
+	}
+	if req.Prompt != "" && !adapter.Capabilities().Prompt {
+		return domain.Task{}, nil, errors.New("selected adapter does not support prompt tasks")
+	}
+	if len(req.Command) > 0 && !adapter.Capabilities().Command {
+		return domain.Task{}, nil, errors.New("selected adapter does not support command tasks")
 	}
 	cwd := req.CWD
 	if cwd == "" {
 		var err error
 		cwd, err = os.Getwd()
 		if err != nil {
-			return domain.Task{}, fmt.Errorf("get working directory: %w", err)
+			return domain.Task{}, nil, fmt.Errorf("get working directory: %w", err)
 		}
-	}
-	var baseline *verification.WorkspaceBaseline
-	if req.Verification.Workspace {
-		captured, err := (verification.WorkspaceVerifier{}).Capture(s.ctx, cwd, req.Verification.WorkspacePolicy)
-		if err != nil {
-			return domain.Task{}, fmt.Errorf("capture workspace baseline: %w", err)
-		}
-		baseline = &captured
 	}
 	now := time.Now().UTC()
 	kind := domain.TaskKindCommand
@@ -96,7 +149,7 @@ func (s *Service) StartTask(req StartTaskRequest) (domain.Task, error) {
 		kind = domain.TaskKindAgent
 	}
 	t := &domain.Task{
-		ID: newTaskID(), Kind: kind, Adapter: s.adapter.Name(),
+		ID: newTaskID(), Kind: kind, Adapter: adapter.Name(),
 		Command: append([]string(nil), req.Command...), CWD: cwd,
 		Status: domain.TaskQueued, CreatedAt: now, UpdatedAt: now,
 	}
@@ -104,26 +157,59 @@ func (s *Service) StartTask(req StartTaskRequest) (domain.Task, error) {
 	s.tasks[t.ID] = t
 	s.mu.Unlock()
 	s.bus.Publish(domain.Event{TaskID: t.ID, Type: domain.EventTaskCreated, Timestamp: now, Data: cloneTask(t)})
+	return cloneTask(t), adapter, nil
+}
+
+func (s *Service) startQueuedTask(taskID string, req StartTaskRequest, adapter agent.Adapter) error {
+	t, err := s.GetTask(taskID)
+	if err != nil {
+		return err
+	}
+	if t.Status != domain.TaskQueued {
+		return ErrTaskNotRunning
+	}
+	var baseline *verification.WorkspaceBaseline
+	if req.Verification.Workspace {
+		captured, err := (verification.WorkspaceVerifier{}).Capture(s.ctx, t.CWD, req.Verification.WorkspacePolicy)
+		if err != nil {
+			wrapped := fmt.Errorf("capture workspace baseline: %w", err)
+			_ = s.fail(t.ID, -1, wrapped.Error())
+			return wrapped
+		}
+		baseline = &captured
+	}
+	t, err = s.GetTask(taskID)
+	if err != nil {
+		return err
+	}
+	if t.Status != domain.TaskQueued {
+		return ErrTaskNotRunning
+	}
 
 	ctx, cancel := context.WithCancel(s.ctx)
-	session, err := s.adapter.Start(ctx, agent.StartRequest{TaskID: t.ID, Command: t.Command, CWD: t.CWD})
+	session, err := adapter.Start(ctx, agent.StartRequest{TaskID: t.ID, Command: t.Command, CWD: t.CWD})
 	if err != nil {
 		cancel()
 		_ = s.fail(t.ID, -1, err.Error())
-		return domain.Task{}, err
+		return err
 	}
-	events, err := s.adapter.Events(ctx, session.ID)
+	events, err := adapter.Events(ctx, session.ID)
 	if err != nil {
 		cancel()
+		stopCtx, stopCancel := context.WithTimeout(context.Background(), 3*time.Second)
+		_ = adapter.Stop(stopCtx, session.ID)
+		stopCancel()
 		_ = s.fail(t.ID, -1, err.Error())
-		return domain.Task{}, err
+		return err
 	}
 	if req.Model != "" {
-		if err := s.adapter.SetConfigOption(ctx, session.ID, agent.ConfigOption{ID: "model", Value: req.Model}); err != nil {
+		if err := adapter.SetConfigOption(ctx, session.ID, agent.ConfigOption{ID: "model", Value: req.Model}); err != nil {
 			cancel()
-			_ = s.adapter.Stop(context.Background(), session.ID)
+			stopCtx, stopCancel := context.WithTimeout(context.Background(), 3*time.Second)
+			_ = adapter.Stop(stopCtx, session.ID)
+			stopCancel()
 			_ = s.fail(t.ID, -1, "select model: "+err.Error())
-			return domain.Task{}, err
+			return err
 		}
 	}
 	policy := supervisor.DefaultPolicy()
@@ -132,22 +218,30 @@ func (s *Service) StartTask(req StartTaskRequest) (domain.Task, error) {
 	}
 	s.mu.Lock()
 	s.runtimes[t.ID] = taskRuntime{
-		sessionID: session.ID, cancel: cancel,
+		adapter: adapter, sessionID: session.ID, cancel: cancel, actions: make(chan taskAction, 1),
 		verification: cloneVerificationRequest(req.Verification), baseline: baseline,
 		prompt: req.Prompt, interruptWith: req.InterruptWith, policy: policy,
 	}
 	s.mu.Unlock()
 	if err := s.transition(t.ID, domain.TaskRunning, "agent process started"); err != nil {
 		cancel()
-		return domain.Task{}, err
+		stopCtx, stopCancel := context.WithTimeout(context.Background(), 3*time.Second)
+		_ = adapter.Stop(stopCtx, session.ID)
+		stopCancel()
+		s.mu.Lock()
+		delete(s.runtimes, t.ID)
+		s.mu.Unlock()
+		return err
 	}
-	if kind == domain.TaskKindAgent {
+	if t.Kind == domain.TaskKindAgent {
 		go s.consumePrompt(ctx, t.ID, events)
 	} else {
 		go s.consume(ctx, t.ID, events)
 	}
-	return s.GetTask(t.ID)
+	return nil
 }
+
+func (s *Service) ListAdapters() []agent.Descriptor { return s.adapters.List() }
 
 func (s *Service) GetTask(id string) (domain.Task, error) {
 	s.mu.RLock()
@@ -177,16 +271,57 @@ func (s *Service) StopTask(id string) error {
 	runtime, ok := s.runtimes[id]
 	s.mu.RUnlock()
 	if !ok {
-		if _, err := s.GetTask(id); err != nil {
+		current, err := s.GetTask(id)
+		if err != nil {
 			return err
 		}
-		return nil
+		if current.Status.Terminal() {
+			return nil
+		}
+		return s.transition(id, domain.TaskStopped, "stopped by operator")
 	}
 	runtime.cancel()
 	stopCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
-	_ = s.adapter.Stop(stopCtx, runtime.sessionID)
+	_ = runtime.adapter.Stop(stopCtx, runtime.sessionID)
 	return s.transition(id, domain.TaskStopped, "stopped by operator")
+}
+
+// InterruptTask cancels the active agent turn and schedules a same-session
+// follow-up. Completion is acknowledged only after the task mailbox accepted
+// and applied the action.
+func (s *Service) InterruptTask(ctx context.Context, id, message string) error {
+	if message == "" {
+		return errors.New("interrupt message is required")
+	}
+	s.mu.RLock()
+	runtime, ok := s.runtimes[id]
+	t := s.tasks[id]
+	s.mu.RUnlock()
+	if t == nil {
+		return ErrTaskNotFound
+	}
+	if !ok || t.Status != domain.TaskRunning || runtime.actions == nil {
+		return ErrTaskNotRunning
+	}
+	capabilities := runtime.adapter.Capabilities()
+	if t.Kind != domain.TaskKindAgent || !capabilities.Prompt || !capabilities.CancelTurn {
+		return ErrActionUnavailable
+	}
+	action := taskAction{kind: taskActionInterrupt, message: message, result: make(chan error, 1)}
+	select {
+	case runtime.actions <- action:
+	case <-ctx.Done():
+		return ctx.Err()
+	default:
+		return ErrActionUnavailable
+	}
+	select {
+	case err := <-action.result:
+		return err
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 func (s *Service) consume(ctx context.Context, taskID string, events <-chan domain.Event) {

@@ -7,7 +7,7 @@
 - 统一的 `agent.Adapter` 接口和能力声明
 - 通用非交互子进程 Adapter
 - 明确的任务状态机
-- 内存任务仓库和实时事件总线
+- 内存任务仓库、带 sequence/replay 的实时事件总线
 - 初始确定性监督规则
 - 本地 HTTP API 和 SSE 事件流
 - 项目内 Go 1.26.8 工具链，不修改全局 PATH
@@ -103,36 +103,58 @@ Rule-based Supervisor 当前已经提供：
 - OpenCode 单任务 mailbox、自动 idle 纠偏和 hard timeout
 - Agent turn 结束后的 `verifying → completed/attention_required` 完成门禁
 
-HTTP 任务可以显式配置完成门禁：
+## REST 控制面 v1
+
+`foreman serve` 同时注册 `process` 和 `opencode` Adapter。创建任务使用独立的 v1 DTO，任务会先以 `queued` 状态返回，再异步启动 Adapter：
 
 ```bash
 curl -X POST http://127.0.0.1:8090/api/v1/tasks \
   -H 'Content-Type: application/json' \
   -d '{
-    "command":["sh","-c","echo working"],
+    "kind":"agent",
+    "adapter":"opencode",
+    "workspace":"/absolute/path/to/project",
+    "input":{"prompt":"实现需求并运行测试"},
+    "model":"google/gemini-3.8-flash",
+    "supervision":{
+      "idle_timeout":"90s",
+      "hard_timeout":"30m",
+      "max_nudges":2,
+      "max_retries":2
+    },
     "verification":{
-      "commands":[{"argv":["./scripts/test"]}],
+      "commands":[{"argv":["./scripts/test"],"timeout":"10m"}],
       "workspace":true
     }
   }'
 ```
 
-测试或工作区验证任一失败时，任务不会进入 `completed`，而会进入 `attention_required`。当前尚未完成的是断联后自动创建新 Session，以及测试失败后让 OpenCode 自动修复并重新验证。
+对正在运行的 OpenCode turn 进行取消并追加信息：
 
-另一个终端创建任务：
+```bash
+curl -X POST http://127.0.0.1:8090/api/v1/tasks/TASK_ID/actions \
+  -H 'Content-Type: application/json' \
+  -d '{"type":"interrupt","message":"先检查现有接口，不要重写整个模块"}'
+```
+
+创建普通命令任务：
 
 ```bash
 curl -X POST http://127.0.0.1:8090/api/v1/tasks \
   -H 'Content-Type: application/json' \
-  -d '{"command":["sh","-c","echo hello; sleep 1; echo finished"]}'
+  -d '{"adapter":"process","input":{"command":["sh","-c","echo hello; sleep 1; echo finished"]}}'
 ```
 
-查看任务和事件：
+查看 Adapter、任务和可重连事件流：
 
 ```bash
+curl http://127.0.0.1:8090/api/v1/adapters
 curl http://127.0.0.1:8090/api/v1/tasks
-curl -N http://127.0.0.1:8090/api/v1/events
+curl -N http://127.0.0.1:8090/api/v1/tasks/TASK_ID/events
+curl -N -H 'Last-Event-ID: evt-42' http://127.0.0.1:8090/api/v1/tasks/TASK_ID/events
 ```
+
+SSE 事件带有 `id`、`version`、`sequence` 和 `occurred_at`。当前内存历史最多保留最近 4096 个事件和约 16 MiB；cursor 太旧时会产生 `stream.gap`，客户端应重新读取任务快照。测试或工作区验证任一失败时，任务不会进入 `completed`，而会进入 `attention_required`。
 
 ## 目录
 
@@ -152,10 +174,11 @@ internal/api/            HTTP/SSE 控制面
 
 ## 下一步
 
-1. 完成 SPEC-003 剩余能力：断联重试、测试失败自动修复和模拟 ACP 全闭环测试。
-2. 将任务、事件、监督决策和恢复检查点持久化到 SQLite。
-3. 接入 OpenAI、Anthropic 和 Google 三类 Provider 配置。
-4. 接入内网本地模型，作为低于确定性规则优先级的建议决策器。
-5. 在对外监听前加入认证、工作目录白名单和命令权限策略。
+1. 完成 SPEC-004 的真实 OpenCode REST interrupt/cancel 验收。
+2. 完成 SPEC-003 剩余能力：断联重试、测试失败自动修复和模拟 ACP 全闭环测试。
+3. 将任务、事件、监督决策和恢复检查点持久化到 SQLite。
+4. 接入 OpenAI、Anthropic 和 Google 三类命名 Provider 配置。
+5. 接入内网本地模型，作为低于确定性规则优先级的建议决策器。
+6. 在对外监听前加入认证、工作目录白名单和命令权限策略。
 
 > 当前 HTTP API 可以启动任意本地命令，因此默认只监听 `127.0.0.1`，不要直接暴露到局域网。

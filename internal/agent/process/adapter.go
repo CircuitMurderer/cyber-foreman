@@ -38,7 +38,7 @@ func NewAdapter() *Adapter {
 func (a *Adapter) Name() string { return "process" }
 
 func (a *Adapter) Capabilities() agent.Capabilities {
-	return agent.Capabilities{CancelTurn: true}
+	return agent.Capabilities{Command: true, CancelTurn: true}
 }
 
 func (a *Adapter) Start(ctx context.Context, req agent.StartRequest) (agent.Session, error) {

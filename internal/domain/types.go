@@ -65,6 +65,9 @@ const (
 )
 
 type Event struct {
+	ID        string    `json:"id,omitempty"`
+	Version   string    `json:"version,omitempty"`
+	Sequence  uint64    `json:"sequence,omitempty"`
 	TaskID    string    `json:"task_id"`
 	SessionID string    `json:"session_id,omitempty"`
 	Type      EventType `json:"type"`

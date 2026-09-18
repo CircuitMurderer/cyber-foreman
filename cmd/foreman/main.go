@@ -14,6 +14,7 @@ import (
 	"syscall"
 	"time"
 
+	"cyber-foreman/internal/agent"
 	opencodeadapter "cyber-foreman/internal/agent/opencode"
 	processadapter "cyber-foreman/internal/agent/process"
 	"cyber-foreman/internal/api"
@@ -133,12 +134,21 @@ func runOpenCode(parent context.Context, args []string) error {
 func serve(ctx context.Context, args []string) error {
 	flags := flag.NewFlagSet("serve", flag.ContinueOnError)
 	addr := flags.String("addr", "127.0.0.1:8090", "HTTP listen address")
+	opencodeBinary := flags.String("opencode-bin", "scripts/opencode", "project-local OpenCode executable or wrapper")
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
 
 	bus := event.NewBus()
-	service := app.NewService(ctx, processadapter.NewAdapter(), bus)
+	opencode, err := opencodeadapter.NewAdapter(opencodeadapter.Config{Binary: *opencodeBinary})
+	if err != nil {
+		return fmt.Errorf("configure OpenCode adapter: %w", err)
+	}
+	adapters, err := agent.NewRegistry(processadapter.NewAdapter(), opencode)
+	if err != nil {
+		return fmt.Errorf("configure adapter registry: %w", err)
+	}
+	service := app.NewServiceWithRegistry(ctx, adapters, "process", bus)
 	server := &http.Server{Addr: *addr, Handler: api.NewServer(service, bus).Handler(), ReadHeaderTimeout: 5 * time.Second}
 
 	shutdownDone := make(chan struct{})
@@ -151,7 +161,7 @@ func serve(ctx context.Context, args []string) error {
 	}()
 
 	fmt.Printf("cyber-foreman listening on http://%s\n", *addr)
-	err := server.ListenAndServe()
+	err = server.ListenAndServe()
 	if err != nil && !errors.Is(err, http.ErrServerClosed) {
 		return err
 	}
@@ -220,7 +230,7 @@ func printUsage() {
 	fmt.Print(`赛博监工 (cyber-foreman)
 
 Usage:
-  foreman serve [--addr 127.0.0.1:8090]
+  foreman serve [--addr 127.0.0.1:8090] [--opencode-bin scripts/opencode]
   foreman run [--timeout 10m] [--cwd PATH] -- COMMAND [ARG...]
   foreman opencode [--model google/MODEL] [--idle-timeout 90s] [--timeout 10m] [--interrupt-with TEXT] --prompt TEXT
 `)

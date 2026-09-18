@@ -10,6 +10,7 @@ import (
 var ErrUnsupported = errors.New("adapter capability is unsupported")
 
 type Capabilities struct {
+	Command          bool `json:"command"`
 	StructuredEvents bool `json:"structured_events"`
 	ResumeSession    bool `json:"resume_session"`
 	Prompt           bool `json:"prompt"`

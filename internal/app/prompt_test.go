@@ -113,6 +113,38 @@ func TestPromptTaskOperatorInterruptUsesServiceMailbox(t *testing.T) {
 	}
 }
 
+func TestPromptTaskAcceptsRuntimeInterruptAction(t *testing.T) {
+	adapter := newPromptTestAdapter(promptModeNeverComplete)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	service := NewService(ctx, adapter, event.NewBus())
+	policy := supervisor.DefaultPolicy()
+	policy.IdleTimeout = time.Second
+	policy.HardTimeout = 2 * time.Second
+	task, err := service.StartTask(StartTaskRequest{
+		Prompt: "original", CWD: t.TempDir(), Supervision: &policy,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := service.InterruptTask(ctx, task.ID, "runtime follow-up"); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		prompts := adapter.recordedPrompts()
+		if len(prompts) >= 2 {
+			if prompts[1] != "runtime follow-up" || adapter.cancelCalls.Load() != 1 {
+				t.Fatalf("prompts=%#v cancel calls=%d", prompts, adapter.cancelCalls.Load())
+			}
+			_ = service.StopTask(task.ID)
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatal("runtime follow-up was not sent")
+}
+
 func TestNextIdleDelayBacksOffAfterIntervention(t *testing.T) {
 	snapshot := supervisor.Snapshot{
 		Policy: supervisor.Policy{IdleTimeout: time.Second},
