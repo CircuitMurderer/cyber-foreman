@@ -36,6 +36,23 @@ func IsMeaningfulProgress(event domain.Event) bool {
 	}
 }
 
+func IsAgentMessageChunk(event domain.Event) bool {
+	if event.Type != domain.EventAgentSessionUpdate {
+		return false
+	}
+	data, ok := event.Data.(domain.AgentSessionUpdateData)
+	if !ok {
+		return false
+	}
+	var update struct {
+		SessionUpdate string `json:"sessionUpdate"`
+	}
+	if err := json.Unmarshal(data.Update, &update); err != nil {
+		return false
+	}
+	return update.SessionUpdate == "agent_message_chunk"
+}
+
 func ObservationFromEvent(id string, event domain.Event) (Observation, bool) {
 	base := Observation{
 		ID: id, TaskID: event.TaskID, SessionID: event.SessionID, Timestamp: event.Timestamp,

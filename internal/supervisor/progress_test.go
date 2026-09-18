@@ -45,3 +45,15 @@ func TestObservationFromEvent(t *testing.T) {
 		t.Fatalf("unexpected observation: %#v", observation)
 	}
 }
+
+func TestIsAgentMessageChunk(t *testing.T) {
+	payload := json.RawMessage(`{"sessionUpdate":"agent_message_chunk"}`)
+	event := domain.Event{Type: domain.EventAgentSessionUpdate, Data: domain.AgentSessionUpdateData{Update: payload}}
+	if !IsAgentMessageChunk(event) {
+		t.Fatal("agent message chunk was not recognized")
+	}
+	event.Data = domain.AgentSessionUpdateData{Update: json.RawMessage(`{"sessionUpdate":"usage_update"}`)}
+	if IsAgentMessageChunk(event) {
+		t.Fatal("usage update was recognized as an agent message")
+	}
+}

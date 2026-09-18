@@ -63,6 +63,19 @@ GOOGLE_GENERATIVE_AI_API_KEY="..." ./scripts/go run ./cmd/foreman opencode \
   --prompt "检查这个项目并概括当前架构"
 ```
 
+OpenCode Prompt 已由 `app.Service` mailbox 调度。可以配置空转和硬超时：
+
+```bash
+GOOGLE_GENERATIVE_AI_API_KEY="..." ./scripts/go run ./cmd/foreman opencode \
+  --idle-timeout 90s \
+  --timeout 30m \
+  --max-nudges 2 \
+  --max-retries 2 \
+  --prompt "实现需求并运行项目测试"
+```
+
+发生 idle timeout 时，Rule Engine 会生成带预算和去重键的 Decision。由于 OpenCode ACP 不支持真正的 mid-turn message，执行器会发送 `session/cancel`，等待当前轮返回，再在同一 session 中追加确定性的监工提示。连续干预会使用递增的 idle backoff；hard timeout 会停止自动执行并转为 `attention_required`。
+
 在 OpenCode 开始输出后取消当前轮，并在同一会话中追加信息：
 
 ```bash
@@ -79,7 +92,7 @@ Adapter 与 Provider 解耦：Cyber Foreman 使用 ACP 控制 OpenCode，OpenCod
 
 ## 确定性验证
 
-Rule-based Supervisor 第一阶段已经提供：
+Rule-based Supervisor 当前已经提供：
 
 - idle/hard timeout 的纯规则判断与可注入时钟
 - 带预算和去重键的结构化 Decision
@@ -87,6 +100,8 @@ Rule-based Supervisor 第一阶段已经提供：
 - argv 测试验证器、单命令超时、输出上限和凭据脱敏
 - Git HEAD、文件内容基线、敏感路径以及 staged/unstaged `git diff --check`
 - 验证失败后的 `attention_required` 状态
+- OpenCode 单任务 mailbox、自动 idle 纠偏和 hard timeout
+- Agent turn 结束后的 `verifying → completed/attention_required` 完成门禁
 
 HTTP 任务可以显式配置完成门禁：
 
@@ -102,7 +117,7 @@ curl -X POST http://127.0.0.1:8090/api/v1/tasks \
   }'
 ```
 
-测试或工作区验证任一失败时，任务不会进入 `completed`，而会进入 `attention_required`。自动 timeout 纠偏和 OpenCode mailbox 将在 SPEC-003 下一阶段接入 `app.Service`。
+测试或工作区验证任一失败时，任务不会进入 `completed`，而会进入 `attention_required`。当前尚未完成的是断联后自动创建新 Session，以及测试失败后让 OpenCode 自动修复并重新验证。
 
 另一个终端创建任务：
 
@@ -137,7 +152,7 @@ internal/api/            HTTP/SSE 控制面
 
 ## 下一步
 
-1. 按 SPEC-003 实现确定性监督闭环：timeout、Git、test、预算和完成门禁。
+1. 完成 SPEC-003 剩余能力：断联重试、测试失败自动修复和模拟 ACP 全闭环测试。
 2. 将任务、事件、监督决策和恢复检查点持久化到 SQLite。
 3. 接入 OpenAI、Anthropic 和 Google 三类 Provider 配置。
 4. 接入内网本地模型，作为低于确定性规则优先级的建议决策器。

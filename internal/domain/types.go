@@ -6,6 +6,12 @@ import (
 )
 
 type TaskStatus string
+type TaskKind string
+
+const (
+	TaskKindCommand TaskKind = "command"
+	TaskKindAgent   TaskKind = "agent"
+)
 
 const (
 	TaskQueued     TaskStatus = "queued"
@@ -24,6 +30,8 @@ func (s TaskStatus) Terminal() bool {
 
 type Task struct {
 	ID        string     `json:"id"`
+	Kind      TaskKind   `json:"kind"`
+	Adapter   string     `json:"adapter"`
 	Command   []string   `json:"command"`
 	CWD       string     `json:"cwd,omitempty"`
 	Status    TaskStatus `json:"status"`

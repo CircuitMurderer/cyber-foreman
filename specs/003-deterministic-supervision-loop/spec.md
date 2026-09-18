@@ -197,3 +197,11 @@ Clock.Now() time.Time
 ## 开放问题
 
 - 无阻塞性开放问题；持久化、LLM 决策和其他 Agent Adapter 由后续规格处理。
+
+## 阶段性实现证据
+
+- OpenCode Prompt、事件、Prompt result 与 timer 已迁入 `app.Service` 单任务 mailbox。
+- 模拟 Adapter 验证 idle timeout 会产生 `idle-nudge`、调用 Cancel、在同一 Session 追加 Prompt，并进入完成门禁。
+- 模拟 Adapter 验证 hard timeout 会停止自动执行并进入 `attention_required`。
+- 真实 OpenCode 1.18.31 + Gemini 3.8 Flash 验证 operator interrupt 经由 Service 完成 cancel/follow-up，保留上下文并通过 workspace verifier。
+- 真实 idle timeout 验证在 2 秒无进展后自动生成 `idle-nudge`，首轮返回 `cancelled`，追加轮返回 `AUTO-IDLE-OK`，最终任务进入 `completed`。

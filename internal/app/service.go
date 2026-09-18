@@ -14,6 +14,7 @@ import (
 	"cyber-foreman/internal/agent"
 	"cyber-foreman/internal/domain"
 	"cyber-foreman/internal/event"
+	"cyber-foreman/internal/supervisor"
 	"cyber-foreman/internal/task"
 	"cyber-foreman/internal/verification"
 )
@@ -24,9 +25,13 @@ var (
 )
 
 type StartTaskRequest struct {
-	Command      []string            `json:"command"`
-	CWD          string              `json:"cwd,omitempty"`
-	Verification VerificationRequest `json:"verification,omitempty"`
+	Command       []string            `json:"command"`
+	Prompt        string              `json:"prompt,omitempty"`
+	Model         string              `json:"model,omitempty"`
+	InterruptWith string              `json:"interrupt_with,omitempty"`
+	CWD           string              `json:"cwd,omitempty"`
+	Verification  VerificationRequest `json:"verification,omitempty"`
+	Supervision   *supervisor.Policy  `json:"supervision,omitempty"`
 }
 
 type VerificationRequest struct {
@@ -46,10 +51,13 @@ type Service struct {
 }
 
 type taskRuntime struct {
-	sessionID    string
-	cancel       context.CancelFunc
-	verification VerificationRequest
-	baseline     *verification.WorkspaceBaseline
+	sessionID     string
+	cancel        context.CancelFunc
+	verification  VerificationRequest
+	baseline      *verification.WorkspaceBaseline
+	prompt        string
+	interruptWith string
+	policy        supervisor.Policy
 }
 
 func NewService(ctx context.Context, adapter agent.Adapter, bus *event.Bus) *Service {
@@ -60,8 +68,11 @@ func NewService(ctx context.Context, adapter agent.Adapter, bus *event.Bus) *Ser
 }
 
 func (s *Service) StartTask(req StartTaskRequest) (domain.Task, error) {
-	if len(req.Command) == 0 {
-		return domain.Task{}, errors.New("command is required")
+	if (len(req.Command) == 0) == (req.Prompt == "") {
+		return domain.Task{}, errors.New("exactly one of command or prompt is required")
+	}
+	if req.Prompt != "" && !s.adapter.Capabilities().Prompt {
+		return domain.Task{}, errors.New("selected adapter does not support prompt tasks")
 	}
 	cwd := req.CWD
 	if cwd == "" {
@@ -80,8 +91,13 @@ func (s *Service) StartTask(req StartTaskRequest) (domain.Task, error) {
 		baseline = &captured
 	}
 	now := time.Now().UTC()
+	kind := domain.TaskKindCommand
+	if req.Prompt != "" {
+		kind = domain.TaskKindAgent
+	}
 	t := &domain.Task{
-		ID: newTaskID(), Command: append([]string(nil), req.Command...), CWD: cwd,
+		ID: newTaskID(), Kind: kind, Adapter: s.adapter.Name(),
+		Command: append([]string(nil), req.Command...), CWD: cwd,
 		Status: domain.TaskQueued, CreatedAt: now, UpdatedAt: now,
 	}
 	s.mu.Lock()
@@ -102,17 +118,34 @@ func (s *Service) StartTask(req StartTaskRequest) (domain.Task, error) {
 		_ = s.fail(t.ID, -1, err.Error())
 		return domain.Task{}, err
 	}
+	if req.Model != "" {
+		if err := s.adapter.SetConfigOption(ctx, session.ID, agent.ConfigOption{ID: "model", Value: req.Model}); err != nil {
+			cancel()
+			_ = s.adapter.Stop(context.Background(), session.ID)
+			_ = s.fail(t.ID, -1, "select model: "+err.Error())
+			return domain.Task{}, err
+		}
+	}
+	policy := supervisor.DefaultPolicy()
+	if req.Supervision != nil {
+		policy = *req.Supervision
+	}
 	s.mu.Lock()
 	s.runtimes[t.ID] = taskRuntime{
 		sessionID: session.ID, cancel: cancel,
 		verification: cloneVerificationRequest(req.Verification), baseline: baseline,
+		prompt: req.Prompt, interruptWith: req.InterruptWith, policy: policy,
 	}
 	s.mu.Unlock()
 	if err := s.transition(t.ID, domain.TaskRunning, "agent process started"); err != nil {
 		cancel()
 		return domain.Task{}, err
 	}
-	go s.consume(ctx, t.ID, events)
+	if kind == domain.TaskKindAgent {
+		go s.consumePrompt(ctx, t.ID, events)
+	} else {
+		go s.consume(ctx, t.ID, events)
+	}
 	return s.GetTask(t.ID)
 }
 
