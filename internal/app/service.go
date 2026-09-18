@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"os"
 	"sort"
 	"sync"
 	"time"
@@ -14,6 +15,7 @@ import (
 	"cyber-foreman/internal/domain"
 	"cyber-foreman/internal/event"
 	"cyber-foreman/internal/task"
+	"cyber-foreman/internal/verification"
 )
 
 var (
@@ -22,8 +24,15 @@ var (
 )
 
 type StartTaskRequest struct {
-	Command []string `json:"command"`
-	CWD     string   `json:"cwd,omitempty"`
+	Command      []string            `json:"command"`
+	CWD          string              `json:"cwd,omitempty"`
+	Verification VerificationRequest `json:"verification,omitempty"`
+}
+
+type VerificationRequest struct {
+	Commands        []verification.Command       `json:"commands,omitempty"`
+	Workspace       bool                         `json:"workspace,omitempty"`
+	WorkspacePolicy verification.WorkspacePolicy `json:"workspace_policy,omitempty"`
 }
 
 type Service struct {
@@ -37,8 +46,10 @@ type Service struct {
 }
 
 type taskRuntime struct {
-	sessionID string
-	cancel    context.CancelFunc
+	sessionID    string
+	cancel       context.CancelFunc
+	verification VerificationRequest
+	baseline     *verification.WorkspaceBaseline
 }
 
 func NewService(ctx context.Context, adapter agent.Adapter, bus *event.Bus) *Service {
@@ -52,9 +63,25 @@ func (s *Service) StartTask(req StartTaskRequest) (domain.Task, error) {
 	if len(req.Command) == 0 {
 		return domain.Task{}, errors.New("command is required")
 	}
+	cwd := req.CWD
+	if cwd == "" {
+		var err error
+		cwd, err = os.Getwd()
+		if err != nil {
+			return domain.Task{}, fmt.Errorf("get working directory: %w", err)
+		}
+	}
+	var baseline *verification.WorkspaceBaseline
+	if req.Verification.Workspace {
+		captured, err := (verification.WorkspaceVerifier{}).Capture(s.ctx, cwd, req.Verification.WorkspacePolicy)
+		if err != nil {
+			return domain.Task{}, fmt.Errorf("capture workspace baseline: %w", err)
+		}
+		baseline = &captured
+	}
 	now := time.Now().UTC()
 	t := &domain.Task{
-		ID: newTaskID(), Command: append([]string(nil), req.Command...), CWD: req.CWD,
+		ID: newTaskID(), Command: append([]string(nil), req.Command...), CWD: cwd,
 		Status: domain.TaskQueued, CreatedAt: now, UpdatedAt: now,
 	}
 	s.mu.Lock()
@@ -76,24 +103,29 @@ func (s *Service) StartTask(req StartTaskRequest) (domain.Task, error) {
 		return domain.Task{}, err
 	}
 	s.mu.Lock()
-	s.runtimes[t.ID] = taskRuntime{sessionID: session.ID, cancel: cancel}
+	s.runtimes[t.ID] = taskRuntime{
+		sessionID: session.ID, cancel: cancel,
+		verification: cloneVerificationRequest(req.Verification), baseline: baseline,
+	}
 	s.mu.Unlock()
 	if err := s.transition(t.ID, domain.TaskRunning, "agent process started"); err != nil {
 		cancel()
 		return domain.Task{}, err
 	}
-	go s.consume(t.ID, events)
+	go s.consume(ctx, t.ID, events)
 	return s.GetTask(t.ID)
 }
 
 func (s *Service) GetTask(id string) (domain.Task, error) {
 	s.mu.RLock()
 	t, ok := s.tasks[id]
-	s.mu.RUnlock()
 	if !ok {
+		s.mu.RUnlock()
 		return domain.Task{}, ErrTaskNotFound
 	}
-	return cloneTask(t), nil
+	result := cloneTask(t)
+	s.mu.RUnlock()
+	return result, nil
 }
 
 func (s *Service) ListTasks() []domain.Task {
@@ -124,7 +156,7 @@ func (s *Service) StopTask(id string) error {
 	return s.transition(id, domain.TaskStopped, "stopped by operator")
 }
 
-func (s *Service) consume(taskID string, events <-chan domain.Event) {
+func (s *Service) consume(ctx context.Context, taskID string, events <-chan domain.Event) {
 	for evt := range events {
 		s.bus.Publish(evt)
 		if evt.Type != domain.EventAgentExited {
@@ -144,12 +176,93 @@ func (s *Service) consume(taskID string, events <-chan domain.Event) {
 			continue
 		}
 		if err := s.transition(taskID, domain.TaskVerifying, "process exited successfully"); err == nil {
-			_ = s.transition(taskID, domain.TaskCompleted, "default verifier passed")
+			s.mu.RLock()
+			runtime := s.runtimes[taskID]
+			s.mu.RUnlock()
+			s.runVerification(ctx, taskID, runtime)
 		}
 	}
 	s.mu.Lock()
 	delete(s.runtimes, taskID)
 	s.mu.Unlock()
+}
+
+func (s *Service) runVerification(ctx context.Context, taskID string, runtime taskRuntime) {
+	required := false
+	passed := true
+	if len(runtime.verification.Commands) > 0 {
+		required = true
+		s.bus.Publish(domain.Event{TaskID: taskID, Type: domain.EventVerificationStart, Timestamp: time.Now().UTC(),
+			Data: map[string]string{"verifier": "test"}})
+		result := (verification.CommandVerifier{}).Run(ctx, s.taskCWD(taskID), runtime.verification.Commands)
+		s.bus.Publish(domain.Event{TaskID: taskID, Type: domain.EventVerificationFinish, Timestamp: time.Now().UTC(),
+			Data: map[string]any{"verifier": "test", "passed": result.Passed, "result": result}})
+		if !result.Passed {
+			passed = false
+		}
+	}
+	if runtime.verification.Workspace {
+		required = true
+		s.bus.Publish(domain.Event{TaskID: taskID, Type: domain.EventVerificationStart, Timestamp: time.Now().UTC(),
+			Data: map[string]string{"verifier": "workspace"}})
+		var result verification.WorkspaceResult
+		var err error
+		if runtime.baseline == nil {
+			err = errors.New("workspace baseline is missing")
+		} else {
+			result, err = (verification.WorkspaceVerifier{}).Verify(ctx, *runtime.baseline, runtime.verification.WorkspacePolicy)
+		}
+		data := map[string]any{"verifier": "workspace", "passed": err == nil && result.Passed, "result": result}
+		if err != nil {
+			data["error"] = err.Error()
+		}
+		s.bus.Publish(domain.Event{TaskID: taskID, Type: domain.EventVerificationFinish, Timestamp: time.Now().UTC(), Data: data})
+		if err != nil || !result.Passed {
+			passed = false
+		}
+	}
+	if !required {
+		_ = s.transition(taskID, domain.TaskCompleted, "process command exited successfully; no additional verifier configured")
+		return
+	}
+	if passed {
+		_ = s.transition(taskID, domain.TaskCompleted, "all configured verifiers passed")
+		return
+	}
+	_ = s.requireAttention(taskID, "deterministic verification failed")
+}
+
+func (s *Service) taskCWD(taskID string) string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if task := s.tasks[taskID]; task != nil {
+		return task.CWD
+	}
+	return ""
+}
+
+func (s *Service) requireAttention(id, reason string) error {
+	s.mu.Lock()
+	t, ok := s.tasks[id]
+	if !ok {
+		s.mu.Unlock()
+		return ErrTaskNotFound
+	}
+	from := t.Status
+	if !task.CanTransition(from, domain.TaskAttention) {
+		s.mu.Unlock()
+		return fmt.Errorf("%w: %s -> %s", ErrInvalidTransition, from, domain.TaskAttention)
+	}
+	now := time.Now().UTC()
+	t.Status = domain.TaskAttention
+	t.Error = reason
+	t.UpdatedAt = now
+	s.mu.Unlock()
+	s.bus.Publish(domain.Event{TaskID: id, Type: domain.EventTaskState, Timestamp: now,
+		Data: domain.TaskStateData{From: from, To: domain.TaskAttention, Reason: reason}})
+	s.bus.Publish(domain.Event{TaskID: id, Type: domain.EventTaskAttention, Timestamp: now,
+		Data: map[string]string{"reason": reason}})
+	return nil
 }
 
 func (s *Service) fail(id string, exitCode int, message string) error {
@@ -219,5 +332,17 @@ func cloneTask(t *domain.Task) domain.Task {
 		exitCode := *t.ExitCode
 		clone.ExitCode = &exitCode
 	}
+	return clone
+}
+
+func cloneVerificationRequest(request VerificationRequest) VerificationRequest {
+	clone := request
+	clone.Commands = make([]verification.Command, len(request.Commands))
+	for i, command := range request.Commands {
+		clone.Commands[i] = command
+		clone.Commands[i].Argv = append([]string(nil), command.Argv...)
+	}
+	clone.WorkspacePolicy.IgnoredPaths = append([]string(nil), request.WorkspacePolicy.IgnoredPaths...)
+	clone.WorkspacePolicy.SensitivePaths = append([]string(nil), request.WorkspacePolicy.SensitivePaths...)
 	return clone
 }

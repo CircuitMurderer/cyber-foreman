@@ -15,10 +15,11 @@ const (
 	TaskCompleted  TaskStatus = "completed"
 	TaskFailed     TaskStatus = "failed"
 	TaskStopped    TaskStatus = "stopped"
+	TaskAttention  TaskStatus = "attention_required"
 )
 
 func (s TaskStatus) Terminal() bool {
-	return s == TaskCompleted || s == TaskFailed || s == TaskStopped
+	return s == TaskCompleted || s == TaskFailed || s == TaskStopped || s == TaskAttention
 }
 
 type Task struct {
@@ -47,6 +48,12 @@ const (
 	EventAgentPermission    EventType = "agent.permission_requested"
 	EventAgentInterrupt     EventType = "agent.interrupt_requested"
 	EventAgentFollowUp      EventType = "agent.follow_up_started"
+	EventSupervisorDecision EventType = "supervisor.decision"
+	EventSupervisorStarted  EventType = "supervisor.action_started"
+	EventSupervisorFinished EventType = "supervisor.action_finished"
+	EventVerificationStart  EventType = "verification.started"
+	EventVerificationFinish EventType = "verification.finished"
+	EventTaskAttention      EventType = "task.attention_required"
 )
 
 type Event struct {

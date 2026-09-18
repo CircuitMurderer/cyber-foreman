@@ -262,7 +262,56 @@ REQ-007：当 Adapter 子进程非正常退出时，系统必须记录退出码�
 
 测试通过只是证据之一。涉及状态、协议或安全的功能还必须提供对应的事件样例或端到端结果。
 
-## 11. 变更纪律
+## 11. 确定性监督闭环
+
+Rule-based Supervisor 必须采用以下单向数据流：
+
+```text
+Agent / Timer / Git / Test
+            │
+            ▼
+       Observation
+            │
+            ▼
+ Task Snapshot + Rule Engine
+            │
+            ▼
+         Decision
+            │
+            ▼
+      Action Executor
+            │
+            ▼
+          Adapter
+```
+
+各层职责不得混合：
+
+- **Probe** 只采集事实，例如有效进展时间、退出码、Git 增量和测试结果。
+- **Rule Engine** 必须是无副作用的确定性计算，只能输出结构化 Decision。
+- **Action Executor** 是唯一允许调用 Adapter、验证命令和状态迁移的组件。
+- **Task Snapshot** 保存规则需要的当前状态、预算和最近动作，不保存 API Key 等凭据。
+
+每个 Decision 必须包含稳定的 `rule_id`、动作、理由、证据引用和去重键。重复 Observation 不得重复消耗预算或执行动作。所有自动纠偏必须受次数、时间和权限预算约束。
+
+完成判定采用门禁而不是 Agent 自述：
+
+```text
+Agent end_turn / process exit
+            │
+            ▼
+        verifying
+       ┌────┴────┐
+       ▼         ▼
+     tests      git
+       └────┬────┘
+            ▼
+ completed / corrective action / attention_required
+```
+
+本地 LLM 将来只能提供建议型 Decision；确定性安全拒绝、测试失败、Git 越界和预算耗尽拥有更高优先级。
+
+## 12. 变更纪律
 
 - 实现与规格冲突时，以已批准规格为准。
 - 需求变化时，在同一次变更中更新规格、设计、任务和测试。
@@ -271,7 +320,7 @@ REQ-007：当 Adapter 子进程非正常退出时，系统必须记录退出码�
 - 对外接口变更必须说明兼容策略和迁移路径。
 - 已接受规格发生实质变化时，应恢复到 `DRAFT` 或创建替代规格。
 
-## 12. Definition of Ready
+## 13. Definition of Ready
 
 规格进入 `READY` 前必须满足：
 
@@ -282,7 +331,7 @@ REQ-007：当 Adapter 子进程非正常退出时，系统必须记录退出码�
 - 没有会实质改变方案的开放问题；
 - 已确定完成门禁和验证命令。
 
-## 13. Definition of Done
+## 14. Definition of Done
 
 功能进入 `ACCEPTED` 前必须满足：
 
@@ -294,12 +343,12 @@ REQ-007：当 Adapter 子进程非正常退出时，系统必须记录退出码�
 - 没有未披露的安全边界变化；
 - 验收证据能够关联到具体代码版本。
 
-## 14. 第一个建议规格
+## 15. 下一项建议规格
 
 下一项功能建议建立：
 
 ```text
-specs/001-grok-acp-adapter/
+specs/003-deterministic-supervision-loop/
 ```
 
-范围只包含：启动 `grok agent stdio`、ACP 初始化、会话创建、提示发送、事件接收、取消和进程断开上报。自动重连、本地模型纠偏和 SQLite 持久化分别放入后续规格，避免首个功能一次承担过多不确定性。
+范围包含：把 Adapter 事件接入应用层监督循环，建立 Observation、Decision、Action 和预算模型，实现 timeout、Git 与 test 的确定性规则及完成门禁。本地模型判断、SQLite 持久化和多机调度分别放入后续规格。
