@@ -135,6 +135,7 @@ func serve(ctx context.Context, args []string) error {
 	flags := flag.NewFlagSet("serve", flag.ContinueOnError)
 	addr := flags.String("addr", "127.0.0.1:8090", "HTTP listen address")
 	opencodeBinary := flags.String("opencode-bin", "scripts/opencode", "project-local OpenCode executable or wrapper")
+	webDir := flags.String("web-dir", "web/dist", "Vite production build directory; empty disables the web console")
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
@@ -149,7 +150,19 @@ func serve(ctx context.Context, args []string) error {
 		return fmt.Errorf("configure adapter registry: %w", err)
 	}
 	service := app.NewServiceWithRegistry(ctx, adapters, "process", bus)
-	server := &http.Server{Addr: *addr, Handler: api.NewServer(service, bus).Handler(), ReadHeaderTimeout: 5 * time.Second}
+	var frontend []http.Handler
+	if *webDir != "" {
+		webHandler, webErr := api.NewSPAHandler(*webDir)
+		if webErr != nil {
+			if !errors.Is(webErr, os.ErrNotExist) {
+				return fmt.Errorf("configure web console: %w", webErr)
+			}
+			fmt.Fprintf(os.Stderr, "warning: web console disabled: %s (run pnpm --dir web build)\n", webErr)
+		} else {
+			frontend = append(frontend, webHandler)
+		}
+	}
+	server := &http.Server{Addr: *addr, Handler: api.NewServer(service, bus, frontend...).Handler(), ReadHeaderTimeout: 5 * time.Second}
 
 	shutdownDone := make(chan struct{})
 	go func() {
@@ -230,7 +243,7 @@ func printUsage() {
 	fmt.Print(`赛博监工 (cyber-foreman)
 
 Usage:
-  foreman serve [--addr 127.0.0.1:8090] [--opencode-bin scripts/opencode]
+  foreman serve [--addr 127.0.0.1:8090] [--opencode-bin scripts/opencode] [--web-dir web/dist]
   foreman run [--timeout 10m] [--cwd PATH] -- COMMAND [ARG...]
   foreman opencode [--model google/MODEL] [--idle-timeout 90s] [--timeout 10m] [--interrupt-with TEXT] --prompt TEXT
 `)

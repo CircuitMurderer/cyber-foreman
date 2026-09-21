@@ -3,7 +3,10 @@ set -eu
 
 SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 PROJECT_DIR=$(CDPATH= cd -- "$SCRIPT_DIR/.." && pwd)
-cd "$PROJECT_DIR"
-go test ./...
+
 cd "$PROJECT_DIR/web"
-pnpm check
+pnpm build
+
+cd "$PROJECT_DIR"
+mkdir -p bin
+go build -o bin/foreman ./cmd/foreman

@@ -1,6 +1,6 @@
 # 赛博监工
 
-一个面向编码 Agent 的本地控制平面骨架。当前版本负责启动和观察子进程、维护任务状态、发布结构化事件，并提供最小 HTTP/SSE API。后续可以通过 Adapter 接入 Grok Build ACP、OpenCode 和 Codex CLI。
+一个面向编码 Agent 的本地控制平面。当前版本可以启动和观察子进程、维护任务状态、执行确定性监督与完成门禁，并通过 Web 控制台或 HTTP/SSE API 操作 OpenCode。
 
 ## 当前包含
 
@@ -10,7 +10,8 @@
 - 内存任务仓库、带 sequence/replay 的实时事件总线
 - 初始确定性监督规则
 - 本地 HTTP API 和 SSE 事件流
-- 项目内 Go 1.26.8 工具链，不修改全局 PATH
+- React、TypeScript、HeroUI v3 Web 控制台
+- Go 1.26.8、Node.js 22.18 与 pnpm 用户级工具链
 - 项目内 OpenCode 1.18.31 与 ACP v1 Adapter
 
 ## 快速开始
@@ -18,7 +19,9 @@
 检查工具链：
 
 ```bash
-./scripts/go version
+go version
+node --version
+pnpm --version
 ```
 
 运行测试：
@@ -30,14 +33,23 @@
 直接监督一个命令：
 
 ```bash
-./scripts/go run ./cmd/foreman run -- sh -c 'echo working; sleep 1; echo done'
+go run ./cmd/foreman run -- sh -c 'echo working; sleep 1; echo done'
 ```
 
-启动本地控制面：
+安装前端依赖、构建前后端：
+
+```bash
+cd web && pnpm install && cd ..
+./scripts/build
+```
+
+启动本地控制面和 Web 控制台：
 
 ```bash
 ./scripts/dev
 ```
+
+然后访问 <http://127.0.0.1:8090/>。开发前端时可以另开终端运行 `cd web && pnpm dev`；Vite 会把 `/api` 和 `/healthz` 代理到 Go 服务。
 
 ## OpenCode ACP
 
@@ -58,7 +70,7 @@ GOOGLE_GENERATIVE_AI_API_KEY="..." ./scripts/opencode models google
 通过 Cyber Foreman 启动 ACP 会话并发送 Prompt：
 
 ```bash
-GOOGLE_GENERATIVE_AI_API_KEY="..." ./scripts/go run ./cmd/foreman opencode \
+GOOGLE_GENERATIVE_AI_API_KEY="..." go run ./cmd/foreman opencode \
   --model "google/gemini-3.8-flash" \
   --prompt "检查这个项目并概括当前架构"
 ```
@@ -66,7 +78,7 @@ GOOGLE_GENERATIVE_AI_API_KEY="..." ./scripts/go run ./cmd/foreman opencode \
 OpenCode Prompt 已由 `app.Service` mailbox 调度。可以配置空转和硬超时：
 
 ```bash
-GOOGLE_GENERATIVE_AI_API_KEY="..." ./scripts/go run ./cmd/foreman opencode \
+GOOGLE_GENERATIVE_AI_API_KEY="..." go run ./cmd/foreman opencode \
   --idle-timeout 90s \
   --timeout 30m \
   --max-nudges 2 \
@@ -79,7 +91,7 @@ GOOGLE_GENERATIVE_AI_API_KEY="..." ./scripts/go run ./cmd/foreman opencode \
 在 OpenCode 开始输出后取消当前轮，并在同一会话中追加信息：
 
 ```bash
-GOOGLE_GENERATIVE_AI_API_KEY="..." ./scripts/go run ./cmd/foreman opencode \
+GOOGLE_GENERATIVE_AI_API_KEY="..." go run ./cmd/foreman opencode \
   --model "google/gemini-3.8-flash" \
   --prompt "先分析当前实现并给出完整方案" \
   --interrupt-with "补充信息：优先考虑完全离线部署，请据此重新回答"
@@ -170,15 +182,15 @@ internal/event/          实时事件总线
 internal/supervisor/     监督与纠偏规则
 internal/task/           状态机
 internal/api/            HTTP/SSE 控制面
+web/                     React/HeroUI 控制台
 ```
 
 ## 下一步
 
-1. 完成 SPEC-004 的真实 OpenCode REST interrupt/cancel 验收。
-2. 完成 SPEC-003 剩余能力：断联重试、测试失败自动修复和模拟 ACP 全闭环测试。
-3. 将任务、事件、监督决策和恢复检查点持久化到 SQLite。
-4. 接入 OpenAI、Anthropic 和 Google 三类命名 Provider 配置。
-5. 接入内网本地模型，作为低于确定性规则优先级的建议决策器。
-6. 在对外监听前加入认证、工作目录白名单和命令权限策略。
+1. 完成 SPEC-003 剩余能力：断联重试、测试失败自动修复和模拟 ACP 全闭环测试。
+2. 将任务、事件、监督决策和恢复检查点持久化到 SQLite。
+3. 接入 OpenAI、Anthropic 和 Google 三类命名 Provider 配置。
+4. 接入内网本地模型，作为低于确定性规则优先级的建议决策器。
+5. 在对外监听前加入认证、工作目录白名单和命令权限策略。
 
 > 当前 HTTP API 可以启动任意本地命令，因此默认只监听 `127.0.0.1`，不要直接暴露到局域网。

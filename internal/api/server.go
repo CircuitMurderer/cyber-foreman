@@ -24,7 +24,7 @@ type Server struct {
 	mux     *http.ServeMux
 }
 
-func NewServer(service *app.Service, bus *event.Bus) *Server {
+func NewServer(service *app.Service, bus *event.Bus, frontend ...http.Handler) *Server {
 	s := &Server{service: service, bus: bus, mux: http.NewServeMux()}
 	s.mux.HandleFunc("GET /healthz", s.health)
 	s.mux.HandleFunc("GET /api/v1/adapters", s.listAdapters)
@@ -35,6 +35,9 @@ func NewServer(service *app.Service, bus *event.Bus) *Server {
 	s.mux.HandleFunc("POST /api/v1/tasks/{id}/actions", s.taskAction)
 	s.mux.HandleFunc("GET /api/v1/tasks/{id}/events", s.taskEvents)
 	s.mux.HandleFunc("GET /api/v1/events", s.events)
+	if len(frontend) > 0 && frontend[0] != nil {
+		s.mux.Handle("GET /", frontend[0])
+	}
 	return s
 }
 
