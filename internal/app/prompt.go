@@ -41,9 +41,14 @@ func (s *Service) consumePrompt(ctx context.Context, taskID string, events <-cha
 	}
 	outcomes := make(chan promptOutcome, 1)
 	promptActive := false
-	startPrompt := func(text string) {
+	startPrompt := func(text, source string) {
 		promptActive = true
 		snapshot.LastProgressAt = time.Now().UTC()
+		s.bus.Publish(domain.Event{
+			TaskID: taskID, SessionID: runtime.sessionID, Type: domain.EventConversationMessage,
+			Timestamp: snapshot.LastProgressAt,
+			Data:      domain.ConversationMessageData{Role: "user", Source: source, Text: text},
+		})
 		go func() {
 			result, err := runtime.adapter.Prompt(ctx, runtime.sessionID, agent.PromptRequest{Text: text})
 			outcomes <- promptOutcome{result: result, err: err}
@@ -64,8 +69,9 @@ func (s *Service) consumePrompt(ctx context.Context, taskID string, events <-cha
 	performer := promptActionPerformer{adapter: runtime.adapter, sessionID: runtime.sessionID}
 	sequence := 0
 	pendingFollowUp := ""
+	pendingFollowUpSource := ""
 	manualInterrupted := false
-	startPrompt(runtime.prompt)
+	startPrompt(runtime.prompt, "operator")
 
 	for {
 		select {
@@ -88,6 +94,7 @@ func (s *Service) consumePrompt(ctx context.Context, taskID string, events <-cha
 			}
 			snapshot = next
 			pendingFollowUp = action.message
+			pendingFollowUpSource = "operator"
 			idleC = nil
 			s.bus.Publish(domain.Event{
 				TaskID: taskID, SessionID: runtime.sessionID, Type: domain.EventAgentInterrupt,
@@ -127,6 +134,7 @@ func (s *Service) consumePrompt(ctx context.Context, taskID string, events <-cha
 				}
 				snapshot = next
 				pendingFollowUp = runtime.interruptWith
+				pendingFollowUpSource = "operator"
 				manualInterrupted = true
 				idleC = nil
 				s.bus.Publish(domain.Event{
@@ -138,12 +146,14 @@ func (s *Service) consumePrompt(ctx context.Context, taskID string, events <-cha
 			promptActive = false
 			if pendingFollowUp != "" && ctx.Err() == nil {
 				followUp := pendingFollowUp
+				followUpSource := pendingFollowUpSource
 				pendingFollowUp = ""
+				pendingFollowUpSource = ""
 				s.bus.Publish(domain.Event{
 					TaskID: taskID, SessionID: runtime.sessionID, Type: domain.EventAgentFollowUp,
 					Timestamp: time.Now().UTC(), Data: map[string]any{"stop_reason": outcome.result.StopReason},
 				})
-				startPrompt(followUp)
+				startPrompt(followUp, followUpSource)
 				idleC = resetTaskTimer(idleTimer, nextIdleDelay(snapshot))
 				continue
 			}
@@ -206,6 +216,7 @@ func (s *Service) consumePrompt(ctx context.Context, taskID string, events <-cha
 			}
 			snapshot = next
 			pendingFollowUp = timeoutFollowUp(decision)
+			pendingFollowUpSource = "supervisor"
 			s.bus.Publish(domain.Event{
 				TaskID: taskID, SessionID: runtime.sessionID, Type: domain.EventAgentInterrupt,
 				Timestamp: time.Now().UTC(), Data: map[string]string{"rule_id": decision.RuleID},

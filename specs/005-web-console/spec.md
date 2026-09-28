@@ -15,6 +15,7 @@
 - 可创建 agent/command 任务并配置监督和验证策略。
 - 可查看任务状态、实时事件、验证结果与 Supervisor 决策。
 - 可对运行中的 Agent 执行 interrupt/follow-up，对未结束任务执行 cancel。
+- 可按轮次查看用户、监工与 Agent 的对话，并读取聚合后的完整回复。
 - 生产构建由 Foreman HTTP 服务同源托管；开发模式由 Vite 代理 REST/SSE。
 
 ## 非目标
@@ -43,6 +44,12 @@ Given Agent turn 已结束
 When任务进入 verifying  
 Then UI 显示 verification.started/finished 和最终 completed 或 attention_required 状态。
 
+### SCN-004：查看完整对话
+
+Given Agent 已产生一个或多个流式文本 chunk
+When 用户打开“对话与回复”弹窗
+Then UI 按轮次展示用户/监工指令，并将同一轮 Agent chunk 合并为连续的完整回复。
+
 ## 功能要求
 
 - REQ-001：前端必须从 `/api/v1/adapters` 动态读取 Adapter 与能力，不能硬编码可用 Agent。
@@ -54,6 +61,7 @@ Then UI 显示 verification.started/finished 和最终 completed 或 attention_r
 - REQ-007：前端不得请求、持久化或显示 Provider API Key。
 - REQ-008：Go 服务必须支持 SPA 静态文件和前端路由 fallback，同时保持 `/api/v1` 与 `/healthz` 优先。
 - REQ-009：前端必须在窄屏下退化为单列布局，并保持主要操作可用。
+- REQ-010：后端必须记录实际发送给 Agent 的初始、人工和自动追加指令；前端必须区分其来源并聚合 Agent 文本 chunk。
 
 ## 安全与不变量
 
@@ -69,6 +77,7 @@ Then UI 显示 verification.started/finished 和最终 completed 或 attention_r
 - AC-003：通过 UI 可创建任务、查看实时事件、interrupt 和 cancel。
 - AC-004：生产构建访问 `/` 返回前端，未知非 API 路径 fallback 到 `index.html`。
 - AC-005：API 不可用、空任务列表和 SSE 断线都有明确 UI 状态。
+- AC-006：通过真实 OpenCode 任务可在弹窗中看到原始指令和无 chunk 断裂的完整回复，并可复制单轮回复。
 
 ## 验证矩阵
 
@@ -77,3 +86,4 @@ Then UI 显示 verification.started/finished 和最终 completed 或 attention_r
 | REQ-001..REQ-007 | AC-001, AC-003, AC-005 | 前端构建与手工 REST/SSE 闭环 |
 | REQ-008 | AC-002, AC-004 | `internal/api` 测试与 Go build |
 | REQ-009 | AC-005 | 390px/桌面浏览器检查 |
+| REQ-010 | AC-006 | prompt 事件单测与真实 OpenCode 弹窗验收 |

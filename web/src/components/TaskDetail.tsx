@@ -25,6 +25,7 @@ import {
 } from "../api";
 import {absoluteTime, shortID, statusLabel, statusTone} from "../status";
 import {useTaskEvents, type StreamState} from "../useTaskEvents";
+import {ConversationModal} from "./ConversationModal";
 
 interface TaskDetailProps {
   task?: Task;
@@ -95,9 +96,12 @@ export function TaskDetail({task, onChanged}: TaskDetailProps) {
           <h2>{task.adapter}</h2>
           <p title={task.workspace}>{task.workspace || "默认工作目录"}</p>
         </div>
-        <div className="detail-status">
-          <Chip color={statusTone[task.status]} variant="soft">{statusLabel[task.status]}</Chip>
-          <StreamIndicator state={streamState} />
+        <div className="detail-side">
+          <div className="detail-status">
+            <Chip color={statusTone[task.status]} variant="soft">{statusLabel[task.status]}</Chip>
+            <StreamIndicator state={streamState} />
+          </div>
+          {task.kind === "agent" && <ConversationModal task={task} events={events} />}
         </div>
       </div>
 
@@ -218,6 +222,7 @@ function eventSummary(event: ForemanEvent): string {
   if (event.type === "verification.finished") return `${String(data.verifier ?? "")} · ${data.passed ? "通过" : "未通过"}`;
   if (event.type === "agent.stderr") return String(data.line ?? "");
   if (event.type === "agent.output") return String(data.line ?? "");
+  if (event.type === "conversation.message") return String(data.text ?? "");
   if (event.type === "agent.follow_up_started") return `上一轮：${String(data.stop_reason ?? "cancelled")}`;
   if (event.type === "stream.gap") return String(data.message ?? "事件历史存在缺口，请刷新任务快照");
   if (event.type === "agent.session_update") {
@@ -247,6 +252,7 @@ function eventLabel(type: string): string {
     "agent.permission_requested": "权限请求",
     "agent.interrupt_requested": "已请求中断",
     "agent.follow_up_started": "已追加指令",
+    "conversation.message": "已发送指令",
     "supervisor.decision": "监工决策",
     "supervisor.action_started": "开始执行动作",
     "supervisor.action_finished": "动作执行完成",

@@ -34,7 +34,7 @@ export function useTaskEvents(taskID?: string) {
         setEvents((current) => {
           if (event.id && current.some((item) => item.id === event.id)) return current;
           const next = [...current, event];
-          return next.length > 300 ? next.slice(next.length - 300) : next;
+          return next.length > 4096 ? next.slice(next.length - 4096) : next;
         });
       } catch {
         // Malformed external events are ignored; task polling still provides state.

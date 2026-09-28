@@ -34,6 +34,7 @@ func TestPromptTaskAutomaticallyInterruptsIdleOpenCode(t *testing.T) {
 
 	seenDecision := false
 	seenFollowUp := false
+	conversation := make([]domain.ConversationMessageData, 0, 2)
 	deadline := time.After(5 * time.Second)
 	for {
 		select {
@@ -43,6 +44,13 @@ func TestPromptTaskAutomaticallyInterruptsIdleOpenCode(t *testing.T) {
 			}
 			seenDecision = seenDecision || evt.Type == domain.EventSupervisorDecision
 			seenFollowUp = seenFollowUp || evt.Type == domain.EventAgentFollowUp
+			if evt.Type == domain.EventConversationMessage {
+				message, ok := evt.Data.(domain.ConversationMessageData)
+				if !ok {
+					t.Fatalf("conversation data = %#v", evt.Data)
+				}
+				conversation = append(conversation, message)
+			}
 			if evt.Type == domain.EventTaskState {
 				state, ok := evt.Data.(domain.TaskStateData)
 				if ok && state.To.Terminal() {
@@ -55,6 +63,10 @@ func TestPromptTaskAutomaticallyInterruptsIdleOpenCode(t *testing.T) {
 					}
 					if !seenDecision || !seenFollowUp || adapter.cancelCalls.Load() != 1 {
 						t.Fatalf("decision=%v follow-up=%v cancel calls=%d", seenDecision, seenFollowUp, adapter.cancelCalls.Load())
+					}
+					if len(conversation) != 2 || conversation[0].Text != "original task" ||
+						conversation[0].Source != "operator" || conversation[1].Source != "supervisor" {
+						t.Fatalf("unexpected conversation messages: %#v", conversation)
 					}
 					prompts := adapter.recordedPrompts()
 					if len(prompts) != 2 || prompts[0] != "original task" || !strings.Contains(prompts[1], "没有可观察进展") {

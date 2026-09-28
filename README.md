@@ -11,6 +11,7 @@
 - 初始确定性监督规则
 - 本地 HTTP API 和 SSE 事件流
 - React、TypeScript、HeroUI v3 Web 控制台
+- 对话记录弹窗与 Agent 流式 chunk 完整回复聚合
 - Go 1.26.8、Node.js 22.18 与 pnpm 用户级工具链
 - 项目内 OpenCode 1.18.31 与 ACP v1 Adapter
 

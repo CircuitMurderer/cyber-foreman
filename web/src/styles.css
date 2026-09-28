@@ -234,6 +234,7 @@ select.control { appearance: auto; }
 .detail-id span { color: var(--accent); }
 .detail-titlebar h2 { margin: 8px 0 5px; font-size: 30px; line-height: 1; letter-spacing: -.04em; }
 .detail-titlebar p { color: var(--muted); max-width: 620px; margin: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font: 10px var(--mono); }
+.detail-side { display: flex; flex-direction: column; align-items: flex-end; gap: 12px; }
 .detail-status { gap: 12px; }
 .stream-state { display: flex; align-items: center; gap: 6px; color: var(--muted); font-size: 10px; }
 .stream-state i { width: 6px; height: 6px; border-radius: 50%; background: var(--subtle); }
@@ -258,6 +259,49 @@ select.control { appearance: auto; }
 .action-content { display: grid; gap: 9px; }
 .interrupt-row { display: grid; grid-template-columns: minmax(0,1fr) auto; align-items: end; gap: 9px; }
 .interrupt-row button { height: 42px; white-space: nowrap; }
+
+.conversation-dialog { width: min(840px, calc(100vw - 32px)); height: min(780px, calc(100vh - 48px)); }
+.conversation-header { border-bottom: 1px solid var(--line); }
+.conversation-header p { margin: 5px 0 0; color: var(--muted); font-size: 11px; }
+.conversation-body { padding-top: 0 !important; }
+.conversation-tabs {
+  position: sticky; top: 0; z-index: 2; display: flex; gap: 4px; padding: 10px 0;
+  background: var(--panel-solid); border-bottom: 1px solid var(--line);
+}
+.conversation-tabs button {
+  border: 0; border-radius: 8px; padding: 7px 11px; background: transparent;
+  color: var(--muted); cursor: pointer; font-size: 11px; font-weight: 600;
+}
+.conversation-tabs button:hover { color: var(--text-strong); background: var(--hover); }
+.conversation-tabs button.active { color: var(--accent); background: var(--accent-soft); }
+.conversation-tabs button span { margin-left: 4px; font: 600 9px var(--mono); }
+.conversation-list, .response-list { display: grid; gap: 16px; padding: 16px 1px 6px; }
+.conversation-message { display: grid; grid-template-columns: 31px minmax(0, 1fr); gap: 10px; }
+.message-avatar {
+  width: 30px; height: 30px; display: grid; place-items: center; border-radius: 9px;
+  color: var(--muted-strong); background: var(--panel-raised); border: 1px solid var(--line);
+}
+.conversation-message.assistant .message-avatar { color: var(--agent); background: var(--agent-soft); }
+.conversation-message.supervisor .message-avatar { color: var(--accent); background: var(--accent-soft); border-color: var(--accent-border); }
+.message-content { min-width: 0; }
+.message-meta { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin: 1px 0 6px; }
+.message-meta strong { color: var(--text-strong); font-size: 11px; }
+.message-meta time, .response-card time { color: var(--subtle); font: 8px var(--mono); }
+.message-text, .response-text {
+  color: var(--text); font-size: 12px; line-height: 1.7; white-space: pre-wrap; overflow-wrap: anywhere;
+}
+.conversation-message.operator .message-text,
+.conversation-message.supervisor .message-text {
+  width: fit-content; max-width: 90%; padding: 10px 12px; border-radius: 4px 12px 12px 12px;
+  background: var(--panel-raised); border: 1px solid var(--line);
+}
+.conversation-message.supervisor .message-text { background: var(--accent-soft); border-color: var(--accent-border); }
+.response-card { border: 1px solid var(--line); border-radius: 12px; background: var(--panel); overflow: hidden; }
+.response-card header { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 9px 10px 9px 13px; border-bottom: 1px solid var(--line); }
+.response-card header > div { display: flex; align-items: baseline; gap: 9px; }
+.response-card header strong { color: var(--text-strong); font-size: 11px; }
+.response-text { padding: 14px; }
+.conversation-empty { min-height: 260px; display: flex; flex-direction: column; justify-content: center; align-items: center; gap: 9px; color: var(--muted); font-size: 11px; }
 
 .timeline-heading { display: flex; align-items: center; justify-content: space-between; padding: 4px 3px 11px; }
 .timeline-heading > div { gap: 7px; font-size: 12px; }
@@ -300,6 +344,8 @@ select.control { appearance: auto; }
   .detail-titlebar { margin-top: 12px; }
   .detail-titlebar h2 { font-size: 25px; }
   .detail-status { flex-direction: column; align-items: flex-end; gap: 6px; }
+  .detail-side { gap: 8px; }
+  .conversation-dialog { width: calc(100vw - 20px); height: calc(100vh - 20px); }
   .interrupt-row { grid-template-columns: 1fr; }
   .interrupt-row button { width: 100%; }
   .two-columns { grid-template-columns: 1fr; }

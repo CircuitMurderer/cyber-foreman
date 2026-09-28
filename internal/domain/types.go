@@ -44,24 +44,25 @@ type Task struct {
 type EventType string
 
 const (
-	EventTaskCreated        EventType = "task.created"
-	EventTaskState          EventType = "task.state"
-	EventAgentStarted       EventType = "agent.started"
-	EventAgentOutput        EventType = "agent.output"
-	EventAgentError         EventType = "agent.error"
-	EventAgentExited        EventType = "agent.exited"
-	EventAgentSessionUpdate EventType = "agent.session_update"
-	EventAgentStderr        EventType = "agent.stderr"
-	EventAgentDisconnected  EventType = "agent.disconnected"
-	EventAgentPermission    EventType = "agent.permission_requested"
-	EventAgentInterrupt     EventType = "agent.interrupt_requested"
-	EventAgentFollowUp      EventType = "agent.follow_up_started"
-	EventSupervisorDecision EventType = "supervisor.decision"
-	EventSupervisorStarted  EventType = "supervisor.action_started"
-	EventSupervisorFinished EventType = "supervisor.action_finished"
-	EventVerificationStart  EventType = "verification.started"
-	EventVerificationFinish EventType = "verification.finished"
-	EventTaskAttention      EventType = "task.attention_required"
+	EventTaskCreated         EventType = "task.created"
+	EventTaskState           EventType = "task.state"
+	EventAgentStarted        EventType = "agent.started"
+	EventAgentOutput         EventType = "agent.output"
+	EventAgentError          EventType = "agent.error"
+	EventAgentExited         EventType = "agent.exited"
+	EventAgentSessionUpdate  EventType = "agent.session_update"
+	EventAgentStderr         EventType = "agent.stderr"
+	EventAgentDisconnected   EventType = "agent.disconnected"
+	EventAgentPermission     EventType = "agent.permission_requested"
+	EventAgentInterrupt      EventType = "agent.interrupt_requested"
+	EventAgentFollowUp       EventType = "agent.follow_up_started"
+	EventConversationMessage EventType = "conversation.message"
+	EventSupervisorDecision  EventType = "supervisor.decision"
+	EventSupervisorStarted   EventType = "supervisor.action_started"
+	EventSupervisorFinished  EventType = "supervisor.action_finished"
+	EventVerificationStart   EventType = "verification.started"
+	EventVerificationFinish  EventType = "verification.finished"
+	EventTaskAttention       EventType = "task.attention_required"
 )
 
 type Event struct {
@@ -93,6 +94,12 @@ type TaskStateData struct {
 
 type AgentSessionUpdateData struct {
 	Update json.RawMessage `json:"update"`
+}
+
+type ConversationMessageData struct {
+	Role   string `json:"role"`
+	Source string `json:"source"`
+	Text   string `json:"text"`
 }
 
 type AgentStderrData struct {

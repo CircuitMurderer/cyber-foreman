@@ -31,4 +31,10 @@ Actions      ─POST──> /api/v1/tasks/{id}/actions
 
 UI 只使用后端状态值。任务创建和动作请求有独立 pending/error 状态；失败显示错误条，不清空用户输入。EventSource 断线显示“正在重连”，任务轮询继续运行。
 
-事件只保留当前页面最多 300 条，避免长会话无限占用浏览器内存。事件 data 默认摘要展示，用户可展开查看结构化 JSON。
+事件 data 默认摘要展示，用户可展开查看结构化 JSON。
+
+## 对话聚合
+
+应用层在每次实际调用 Adapter Prompt 前发布 `conversation.message`，其中包含 `operator` 或 `supervisor` 来源。前端按事件 sequence 合并 `agent_message_chunk`，遇到下一条 Prompt 或 follow-up 边界时开启新一轮回复。
+
+浏览器最多保留 4096 条任务事件，与当前后端默认历史上限一致。对话弹窗提供按角色排列的记录和按轮次聚合的完整回复；当前记录仍随服务进程重启而丢失，后续由持久化层解决。

@@ -175,6 +175,7 @@ export const eventTypes = [
   "agent.permission_requested",
   "agent.interrupt_requested",
   "agent.follow_up_started",
+  "conversation.message",
   "supervisor.decision",
   "supervisor.action_started",
   "supervisor.action_finished",
