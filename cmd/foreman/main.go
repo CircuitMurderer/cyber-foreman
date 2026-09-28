@@ -21,6 +21,7 @@ import (
 	"cyber-foreman/internal/app"
 	"cyber-foreman/internal/domain"
 	"cyber-foreman/internal/event"
+	sqlitestore "cyber-foreman/internal/storage/sqlite"
 	"cyber-foreman/internal/supervisor"
 )
 
@@ -136,11 +137,17 @@ func serve(ctx context.Context, args []string) error {
 	addr := flags.String("addr", "127.0.0.1:8090", "HTTP listen address")
 	opencodeBinary := flags.String("opencode-bin", "scripts/opencode", "project-local OpenCode executable or wrapper")
 	webDir := flags.String("web-dir", "web/dist", "Vite production build directory; empty disables the web console")
+	databasePath := flags.String("db", "data/foreman.db", "SQLite database path")
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
 
-	bus := event.NewBus()
+	store, err := sqlitestore.Open(*databasePath)
+	if err != nil {
+		return fmt.Errorf("open persistence store: %w", err)
+	}
+	defer store.Close()
+	bus := event.NewBusWithJournal(store)
 	opencode, err := opencodeadapter.NewAdapter(opencodeadapter.Config{Binary: *opencodeBinary})
 	if err != nil {
 		return fmt.Errorf("configure OpenCode adapter: %w", err)
@@ -149,7 +156,10 @@ func serve(ctx context.Context, args []string) error {
 	if err != nil {
 		return fmt.Errorf("configure adapter registry: %w", err)
 	}
-	service := app.NewServiceWithRegistry(ctx, adapters, "process", bus)
+	service, err := app.NewServiceWithRegistryAndStore(ctx, adapters, "process", bus, store)
+	if err != nil {
+		return fmt.Errorf("restore control plane: %w", err)
+	}
 	var frontend []http.Handler
 	if *webDir != "" {
 		webHandler, webErr := api.NewSPAHandler(*webDir)
@@ -173,7 +183,7 @@ func serve(ctx context.Context, args []string) error {
 		close(shutdownDone)
 	}()
 
-	fmt.Printf("cyber-foreman listening on http://%s\n", *addr)
+	fmt.Printf("cyber-foreman listening on http://%s (database: %s)\n", *addr, store.Path())
 	err = server.ListenAndServe()
 	if err != nil && !errors.Is(err, http.ErrServerClosed) {
 		return err
@@ -243,7 +253,7 @@ func printUsage() {
 	fmt.Print(`赛博监工 (cyber-foreman)
 
 Usage:
-  foreman serve [--addr 127.0.0.1:8090] [--opencode-bin scripts/opencode] [--web-dir web/dist]
+  foreman serve [--addr 127.0.0.1:8090] [--opencode-bin scripts/opencode] [--web-dir web/dist] [--db data/foreman.db]
   foreman run [--timeout 10m] [--cwd PATH] -- COMMAND [ARG...]
   foreman opencode [--model google/MODEL] [--idle-timeout 90s] [--timeout 10m] [--interrupt-with TEXT] --prompt TEXT
 `)

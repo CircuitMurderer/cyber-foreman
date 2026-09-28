@@ -7,7 +7,7 @@
 - 统一的 `agent.Adapter` 接口和能力声明
 - 通用非交互子进程 Adapter
 - 明确的任务状态机
-- 内存任务仓库、带 sequence/replay 的实时事件总线
+- SQLite 任务仓库、持久 sequence/replay 与实时事件总线
 - 初始确定性监督规则
 - 本地 HTTP API 和 SSE 事件流
 - React、TypeScript、HeroUI v3 Web 控制台
@@ -51,6 +51,8 @@ cd web && pnpm install && cd ..
 ```
 
 然后访问 <http://127.0.0.1:8090/>。开发前端时可以另开终端运行 `cd web && pnpm dev`；Vite 会把 `/api` 和 `/healthz` 代理到 Go 服务。
+
+`serve` 默认把任务和完整事件时间线保存在 `data/foreman.db`。可通过 `--db /path/to/foreman.db` 修改位置；数据库目录不会提交到 Git。任务状态和事件索引使用关系字段，Agent 原始事件载荷使用 JSON，因此扩展新事件不需要为每种 payload 改表。服务重启时，无法恢复进程句柄或 ACP session 的未结束任务会被明确转为 `attention_required`。
 
 ## OpenCode ACP
 
@@ -167,7 +169,7 @@ curl -N http://127.0.0.1:8090/api/v1/tasks/TASK_ID/events
 curl -N -H 'Last-Event-ID: evt-42' http://127.0.0.1:8090/api/v1/tasks/TASK_ID/events
 ```
 
-SSE 事件带有 `id`、`version`、`sequence` 和 `occurred_at`。当前内存历史最多保留最近 4096 个事件和约 16 MiB；cursor 太旧时会产生 `stream.gap`，客户端应重新读取任务快照。测试或工作区验证任一失败时，任务不会进入 `completed`，而会进入 `attention_required`。
+SSE 事件带有 `id`、`version`、`sequence` 和 `occurred_at`。`serve` 模式下 cursor 与事件历史由 SQLite 持久化，页面刷新或 Foreman 重启后仍可读取完整时间线；非持久化 CLI 模式保留最近 4096 个事件和约 16 MiB。测试或工作区验证任一失败时，任务不会进入 `completed`，而会进入 `attention_required`。
 
 ## 目录
 
@@ -180,6 +182,7 @@ internal/acp/            ACP v1 JSON-RPC 客户端
 internal/app/            任务编排应用层
 internal/domain/         任务和事件类型
 internal/event/          实时事件总线
+internal/storage/        持久化边界与 SQLite 实现
 internal/supervisor/     监督与纠偏规则
 internal/task/           状态机
 internal/api/            HTTP/SSE 控制面
@@ -189,9 +192,8 @@ web/                     React/HeroUI 控制台
 ## 下一步
 
 1. 完成 SPEC-003 剩余能力：断联重试、测试失败自动修复和模拟 ACP 全闭环测试。
-2. 将任务、事件、监督决策和恢复检查点持久化到 SQLite。
-3. 接入 OpenAI、Anthropic 和 Google 三类命名 Provider 配置。
-4. 接入内网本地模型，作为低于确定性规则优先级的建议决策器。
-5. 在对外监听前加入认证、工作目录白名单和命令权限策略。
+2. 接入 OpenAI、Anthropic 和 Google 三类命名 Provider 配置。
+3. 接入内网本地模型，作为低于确定性规则优先级的建议决策器。
+4. 在对外监听前加入认证、工作目录白名单和命令权限策略。
 
 > 当前 HTTP API 可以启动任意本地命令，因此默认只监听 `127.0.0.1`，不要直接暴露到局域网。

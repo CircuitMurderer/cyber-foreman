@@ -150,11 +150,15 @@ func (s *Server) streamEvents(w http.ResponseWriter, r *http.Request, taskID str
 		writeAPIError(w, http.StatusBadRequest, "invalid_cursor", err)
 		return
 	}
+	events, gap, err := s.bus.SubscribeTaskSince(r.Context(), after, 256, taskID)
+	if err != nil {
+		writeAPIError(w, http.StatusInternalServerError, "event_history_unavailable", err)
+		return
+	}
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
 	w.Header().Set("X-Accel-Buffering", "no")
-	events, gap := s.bus.SubscribeSince(r.Context(), after, 256)
 	if gap {
 		writeSSE(w, "", "stream.gap", map[string]string{
 			"code": "event_history_gap", "message": "requested events are no longer retained; reload the task snapshot",

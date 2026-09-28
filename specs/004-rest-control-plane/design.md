@@ -46,9 +46,9 @@ Event Bus 保留内部结构化事实，HTTP 层负责公开契约。输出前�
 
 ## 事件 replay
 
-Event Bus 在 Publish 时分配进程内全局 sequence 和 `evt-{sequence}` ID，并保留同时受事件数与约 16 MiB 内存预算约束的 history；超过 256 KiB 的单个历史 payload 只留摘要。`SubscribeSince` 在同一锁内建立订阅并复制 replay，避免 replay 与 live subscription 之间丢事件。
+Event Bus 在 Publish 时分配全局 sequence 和 `evt-{sequence}` ID，并保留同时受事件数与约 16 MiB 内存预算约束的 history；超过 256 KiB 的单个历史 payload 只留摘要。`SubscribeSince` 在同一锁内建立订阅并复制 replay，避免 replay 与 live subscription 之间丢事件。SPEC-006 已在 `serve` 模式下把 sequence 与 replay 来源升级为 SQLite 持久日志；非持久化 CLI 仍使用本段描述的内存模式。
 
-当请求 cursor 已早于最老 retained event，API 先发 `stream.gap`。前端随后读取 `GET /tasks/{id}`，再从新 cursor 继续。live subscriber 队列溢出时 Event Bus 主动断开该消费者，使其用最后收到的 ID 从 history 重连；事件不能在保持连接的同时被静默跳过。SQLite 阶段将把有限内存窗口替换为持久 cursor。
+在非持久化模式中，请求 cursor 已早于最老 retained event 时，API 先发 `stream.gap`。前端随后读取 `GET /tasks/{id}`，再从新 cursor 继续。live subscriber 队列溢出时 Event Bus 主动断开该消费者，使其用最后收到的 ID 重连；事件不能在保持连接的同时被静默跳过。`serve` 模式的旧 cursor 由 SQLite 持久日志满足。
 
 ## REST DTO
 

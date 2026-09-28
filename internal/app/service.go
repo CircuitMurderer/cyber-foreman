@@ -14,6 +14,7 @@ import (
 	"cyber-foreman/internal/agent"
 	"cyber-foreman/internal/domain"
 	"cyber-foreman/internal/event"
+	"cyber-foreman/internal/storage"
 	"cyber-foreman/internal/supervisor"
 	"cyber-foreman/internal/task"
 	"cyber-foreman/internal/verification"
@@ -48,6 +49,7 @@ type Service struct {
 	adapters       *agent.Registry
 	defaultAdapter string
 	bus            *event.Bus
+	store          storage.TaskStore
 
 	mu       sync.RWMutex
 	tasks    map[string]*domain.Task
@@ -83,16 +85,73 @@ func NewService(ctx context.Context, adapter agent.Adapter, bus *event.Bus) *Ser
 }
 
 func NewServiceWithRegistry(ctx context.Context, adapters *agent.Registry, defaultAdapter string, bus *event.Bus) *Service {
+	service, err := newServiceWithRegistry(ctx, adapters, defaultAdapter, bus, nil)
+	if err != nil {
+		panic(err)
+	}
+	return service
+}
+
+// NewServiceWithRegistryAndStore restores durable task snapshots. Tasks that
+// were active when the previous process stopped are made attention-required:
+// process handles and ACP sessions cannot safely survive a Foreman restart.
+func NewServiceWithRegistryAndStore(ctx context.Context, adapters *agent.Registry, defaultAdapter string, bus *event.Bus, store storage.TaskStore) (*Service, error) {
+	return newServiceWithRegistry(ctx, adapters, defaultAdapter, bus, store)
+}
+
+func newServiceWithRegistry(ctx context.Context, adapters *agent.Registry, defaultAdapter string, bus *event.Bus, store storage.TaskStore) (*Service, error) {
 	if adapters == nil {
 		panic("adapter registry is nil")
 	}
 	if bus == nil {
 		panic("event bus is nil")
 	}
-	return &Service{
+	service := &Service{
 		ctx: ctx, adapters: adapters, defaultAdapter: defaultAdapter, bus: bus,
-		tasks: make(map[string]*domain.Task), runtimes: make(map[string]taskRuntime),
+		store: store, tasks: make(map[string]*domain.Task), runtimes: make(map[string]taskRuntime),
 	}
+	if store == nil {
+		return service, nil
+	}
+	if err := service.restoreTasks(); err != nil {
+		return nil, err
+	}
+	return service, nil
+}
+
+func (s *Service) restoreTasks() error {
+	tasks, err := s.store.ListTasks()
+	if err != nil {
+		return fmt.Errorf("restore tasks: %w", err)
+	}
+	for i := range tasks {
+		restored := cloneTask(&tasks[i])
+		if !restored.Status.Terminal() {
+			from := restored.Status
+			restored.Status = domain.TaskAttention
+			restored.Error = "foreman restarted before the task reached a terminal state"
+			restored.UpdatedAt = time.Now().UTC()
+			if err := s.store.PutTask(restored); err != nil {
+				return fmt.Errorf("recover task %s: %w", restored.ID, err)
+			}
+			s.tasks[restored.ID] = &restored
+			if err := s.bus.PublishChecked(domain.Event{
+				TaskID: restored.ID, Type: domain.EventTaskState, Timestamp: restored.UpdatedAt,
+				Data: domain.TaskStateData{From: from, To: domain.TaskAttention, Reason: restored.Error},
+			}); err != nil {
+				return fmt.Errorf("record task %s recovery: %w", restored.ID, err)
+			}
+			if err := s.bus.PublishChecked(domain.Event{
+				TaskID: restored.ID, Type: domain.EventTaskAttention, Timestamp: restored.UpdatedAt,
+				Data: map[string]string{"reason": restored.Error},
+			}); err != nil {
+				return fmt.Errorf("record task %s recovery attention: %w", restored.ID, err)
+			}
+			continue
+		}
+		s.tasks[restored.ID] = &restored
+	}
+	return nil
 }
 
 func (s *Service) StartTask(req StartTaskRequest) (domain.Task, error) {
@@ -153,10 +212,23 @@ func (s *Service) queueTask(req StartTaskRequest) (domain.Task, agent.Adapter, e
 		Command: append([]string(nil), req.Command...), CWD: cwd,
 		Status: domain.TaskQueued, CreatedAt: now, UpdatedAt: now,
 	}
+	if s.store != nil {
+		if err := s.store.PutTask(cloneTask(t)); err != nil {
+			return domain.Task{}, nil, err
+		}
+	}
 	s.mu.Lock()
 	s.tasks[t.ID] = t
 	s.mu.Unlock()
-	s.bus.Publish(domain.Event{TaskID: t.ID, Type: domain.EventTaskCreated, Timestamp: now, Data: cloneTask(t)})
+	if err := s.bus.PublishChecked(domain.Event{TaskID: t.ID, Type: domain.EventTaskCreated, Timestamp: now, Data: cloneTask(t)}); err != nil {
+		s.mu.Lock()
+		delete(s.tasks, t.ID)
+		s.mu.Unlock()
+		if s.store != nil {
+			_ = s.store.DeleteTask(t.ID)
+		}
+		return domain.Task{}, nil, fmt.Errorf("record task creation: %w", err)
+	}
 	return cloneTask(t), adapter, nil
 }
 
@@ -422,14 +494,26 @@ func (s *Service) requireAttention(id, reason string) error {
 		return fmt.Errorf("%w: %s -> %s", ErrInvalidTransition, from, domain.TaskAttention)
 	}
 	now := time.Now().UTC()
-	t.Status = domain.TaskAttention
-	t.Error = reason
-	t.UpdatedAt = now
+	updated := cloneTask(t)
+	updated.Status = domain.TaskAttention
+	updated.Error = reason
+	updated.UpdatedAt = now
+	if s.store != nil {
+		if err := s.store.PutTask(updated); err != nil {
+			s.mu.Unlock()
+			return err
+		}
+	}
+	*t = updated
 	s.mu.Unlock()
-	s.bus.Publish(domain.Event{TaskID: id, Type: domain.EventTaskState, Timestamp: now,
-		Data: domain.TaskStateData{From: from, To: domain.TaskAttention, Reason: reason}})
-	s.bus.Publish(domain.Event{TaskID: id, Type: domain.EventTaskAttention, Timestamp: now,
-		Data: map[string]string{"reason": reason}})
+	if err := s.bus.PublishChecked(domain.Event{TaskID: id, Type: domain.EventTaskState, Timestamp: now,
+		Data: domain.TaskStateData{From: from, To: domain.TaskAttention, Reason: reason}}); err != nil {
+		return err
+	}
+	if err := s.bus.PublishChecked(domain.Event{TaskID: id, Type: domain.EventTaskAttention, Timestamp: now,
+		Data: map[string]string{"reason": reason}}); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -449,16 +533,25 @@ func (s *Service) fail(id string, exitCode int, message string) error {
 		s.mu.Unlock()
 		return fmt.Errorf("%w: %s -> %s", ErrInvalidTransition, from, domain.TaskFailed)
 	}
-	t.Status = domain.TaskFailed
-	t.ExitCode = &exitCode
-	t.Error = message
-	t.UpdatedAt = time.Now().UTC()
 	updated := cloneTask(t)
+	updated.Status = domain.TaskFailed
+	updated.ExitCode = &exitCode
+	updated.Error = message
+	updated.UpdatedAt = time.Now().UTC()
+	if s.store != nil {
+		if err := s.store.PutTask(updated); err != nil {
+			s.mu.Unlock()
+			return err
+		}
+	}
+	*t = updated
 	s.mu.Unlock()
-	s.bus.Publish(domain.Event{
+	if err := s.bus.PublishChecked(domain.Event{
 		TaskID: id, Type: domain.EventTaskState, Timestamp: updated.UpdatedAt,
 		Data: domain.TaskStateData{From: from, To: domain.TaskFailed, Reason: message},
-	})
+	}); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -474,14 +567,23 @@ func (s *Service) transition(id string, to domain.TaskStatus, reason string) err
 		s.mu.Unlock()
 		return fmt.Errorf("%w: %s -> %s", ErrInvalidTransition, from, to)
 	}
-	t.Status = to
-	t.UpdatedAt = time.Now().UTC()
-	updatedAt := t.UpdatedAt
+	updated := cloneTask(t)
+	updated.Status = to
+	updated.UpdatedAt = time.Now().UTC()
+	if s.store != nil {
+		if err := s.store.PutTask(updated); err != nil {
+			s.mu.Unlock()
+			return err
+		}
+	}
+	*t = updated
 	s.mu.Unlock()
-	s.bus.Publish(domain.Event{
-		TaskID: id, Type: domain.EventTaskState, Timestamp: updatedAt,
+	if err := s.bus.PublishChecked(domain.Event{
+		TaskID: id, Type: domain.EventTaskState, Timestamp: updated.UpdatedAt,
 		Data: domain.TaskStateData{From: from, To: to, Reason: reason},
-	})
+	}); err != nil {
+		return err
+	}
 	return nil
 }
 
