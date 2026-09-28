@@ -157,6 +157,37 @@ func TestPromptTaskAcceptsRuntimeInterruptAction(t *testing.T) {
 	t.Fatal("runtime follow-up was not sent")
 }
 
+func TestInteractivePromptContinuesWithoutCancellingSameSession(t *testing.T) {
+	adapter := newPromptTestAdapter(promptModeCompleteEveryTurn)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	service := NewService(ctx, adapter, event.NewBus())
+	policy := supervisor.DefaultPolicy()
+	policy.IdleTimeout = time.Second
+	policy.HardTimeout = 2 * time.Second
+	task, err := service.StartTask(StartTaskRequest{
+		Prompt: "first turn", Interactive: true, CWD: t.TempDir(), Supervision: &policy,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitForTaskStatus(t, service, task.ID, domain.TaskWaiting)
+	if err := service.ContinueTask(ctx, task.ID, "second turn"); err != nil {
+		t.Fatal(err)
+	}
+	waitForTaskStatus(t, service, task.ID, domain.TaskWaiting)
+	prompts := adapter.recordedPrompts()
+	if len(prompts) != 2 || prompts[0] != "first turn" || prompts[1] != "second turn" {
+		t.Fatalf("prompts=%#v", prompts)
+	}
+	if adapter.cancelCalls.Load() != 0 {
+		t.Fatalf("continue unexpectedly cancelled the turn %d times", adapter.cancelCalls.Load())
+	}
+	if err := service.StopTask(task.ID); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestNextIdleDelayBacksOffAfterIntervention(t *testing.T) {
 	snapshot := supervisor.Snapshot{
 		Policy: supervisor.Policy{IdleTimeout: time.Second},
@@ -173,6 +204,7 @@ const (
 	promptModeIdleThenComplete promptTestMode = iota
 	promptModeNeverComplete
 	promptModeMessageThenComplete
+	promptModeCompleteEveryTurn
 )
 
 type promptTestAdapter struct {
@@ -213,6 +245,13 @@ func (a *promptTestAdapter) Prompt(ctx context.Context, _ string, req agent.Prom
 	a.prompts = append(a.prompts, req.Text)
 	a.promptMu.Unlock()
 	call := a.promptCalls.Add(1)
+	if a.mode == promptModeCompleteEveryTurn {
+		a.events <- domain.Event{
+			TaskID: a.taskID, SessionID: "session-test", Type: domain.EventAgentSessionUpdate, Timestamp: time.Now().UTC(),
+			Data: domain.AgentSessionUpdateData{Update: []byte(`{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"done"}}`)},
+		}
+		return agent.PromptResult{StopReason: "end_turn"}, nil
+	}
 	if (a.mode == promptModeIdleThenComplete || a.mode == promptModeMessageThenComplete) && call > 1 {
 		a.events <- domain.Event{
 			TaskID: a.taskID, SessionID: "session-test", Type: domain.EventAgentSessionUpdate, Timestamp: time.Now().UTC(),
@@ -232,6 +271,23 @@ func (a *promptTestAdapter) Prompt(ctx context.Context, _ string, req agent.Prom
 	case <-ctx.Done():
 		return agent.PromptResult{}, ctx.Err()
 	}
+}
+
+func waitForTaskStatus(t *testing.T, service *Service, taskID string, status domain.TaskStatus) domain.Task {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		task, err := service.GetTask(taskID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if task.Status == status {
+			return task
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatalf("task %s did not reach %s", taskID, status)
+	return domain.Task{}
 }
 
 func (a *promptTestAdapter) Cancel(context.Context, string) error {

@@ -3,6 +3,7 @@ export type TaskStatus =
   | "running"
   | "recovering"
   | "verifying"
+  | "waiting_input"
   | "completed"
   | "failed"
   | "stopped"
@@ -43,6 +44,7 @@ export interface Task {
   error?: string;
   created_at: string;
   updated_at: string;
+  available_actions?: Array<"interrupt" | "continue" | "cancel" | "delete">;
   links: TaskLinks;
 }
 
@@ -143,11 +145,22 @@ export function interruptTask(id: string, message: string): Promise<void> {
   });
 }
 
+export function continueTask(id: string, message: string): Promise<void> {
+  return request<void>(`/api/v1/tasks/${encodeURIComponent(id)}/actions`, {
+    method: "POST",
+    body: JSON.stringify({type: "continue", message})
+  });
+}
+
 export function cancelTask(id: string): Promise<void> {
   return request<void>(`/api/v1/tasks/${encodeURIComponent(id)}/actions`, {
     method: "POST",
     body: JSON.stringify({type: "cancel"})
   });
+}
+
+export function deleteTask(id: string): Promise<void> {
+  return request<void>(`/api/v1/tasks/${encodeURIComponent(id)}`, {method: "DELETE"});
 }
 
 export function errorMessage(error: unknown): string {

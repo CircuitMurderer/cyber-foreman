@@ -31,7 +31,7 @@ func NewServer(service *app.Service, bus *event.Bus, frontend ...http.Handler) *
 	s.mux.HandleFunc("GET /api/v1/tasks", s.listTasks)
 	s.mux.HandleFunc("POST /api/v1/tasks", s.createTask)
 	s.mux.HandleFunc("GET /api/v1/tasks/{id}", s.getTask)
-	s.mux.HandleFunc("DELETE /api/v1/tasks/{id}", s.stopTask)
+	s.mux.HandleFunc("DELETE /api/v1/tasks/{id}", s.deleteTask)
 	s.mux.HandleFunc("POST /api/v1/tasks/{id}/actions", s.taskAction)
 	s.mux.HandleFunc("GET /api/v1/tasks/{id}/events", s.taskEvents)
 	s.mux.HandleFunc("GET /api/v1/events", s.events)
@@ -55,7 +55,7 @@ func (s *Server) listTasks(w http.ResponseWriter, _ *http.Request) {
 	tasks := s.service.ListTasks()
 	result := make([]taskResponse, len(tasks))
 	for i, task := range tasks {
-		result[i] = newTaskResponse(task)
+		result[i] = newTaskResponse(task, s.service.AvailableActions(task.ID)...)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"tasks": result})
 }
@@ -78,7 +78,7 @@ func (s *Server) createTask(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Location", "/api/v1/tasks/"+task.ID)
-	writeJSON(w, http.StatusAccepted, newTaskResponse(task))
+	writeJSON(w, http.StatusAccepted, newTaskResponse(task, s.service.AvailableActions(task.ID)...))
 }
 
 func (s *Server) getTask(w http.ResponseWriter, r *http.Request) {
@@ -88,11 +88,11 @@ func (s *Server) getTask(w http.ResponseWriter, r *http.Request) {
 		writeAPIError(w, status, code, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, newTaskResponse(task))
+	writeJSON(w, http.StatusOK, newTaskResponse(task, s.service.AvailableActions(task.ID)...))
 }
 
-func (s *Server) stopTask(w http.ResponseWriter, r *http.Request) {
-	if err := s.service.StopTask(r.PathValue("id")); err != nil {
+func (s *Server) deleteTask(w http.ResponseWriter, r *http.Request) {
+	if err := s.service.DeleteTask(r.PathValue("id")); err != nil {
 		status, code := classifyError(err)
 		writeAPIError(w, status, code, err)
 		return
@@ -112,10 +112,14 @@ func (s *Server) taskAction(w http.ResponseWriter, r *http.Request) {
 		actionCtx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 		defer cancel()
 		err = s.service.InterruptTask(actionCtx, r.PathValue("id"), strings.TrimSpace(request.Message))
+	case "continue":
+		actionCtx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+		defer cancel()
+		err = s.service.ContinueTask(actionCtx, r.PathValue("id"), strings.TrimSpace(request.Message))
 	case "cancel":
 		err = s.service.StopTask(r.PathValue("id"))
 	default:
-		writeAPIError(w, http.StatusBadRequest, "invalid_action", errors.New("action type must be interrupt or cancel"))
+		writeAPIError(w, http.StatusBadRequest, "invalid_action", errors.New("action type must be interrupt, continue, or cancel"))
 		return
 	}
 	if err != nil {
@@ -308,7 +312,7 @@ func classifyError(err error) (int, string) {
 		return http.StatusNotFound, "task_not_found"
 	case errors.Is(err, agent.ErrAdapterNotFound):
 		return http.StatusBadRequest, "adapter_not_found"
-	case errors.Is(err, app.ErrTaskNotRunning), errors.Is(err, app.ErrActionUnavailable), errors.Is(err, app.ErrInvalidTransition):
+	case errors.Is(err, app.ErrTaskNotRunning), errors.Is(err, app.ErrActionUnavailable), errors.Is(err, app.ErrInvalidTransition), errors.Is(err, app.ErrTaskNotDeletable):
 		return http.StatusConflict, "action_conflict"
 	default:
 		return http.StatusBadRequest, "invalid_request"

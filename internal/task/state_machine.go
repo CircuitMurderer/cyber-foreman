@@ -16,8 +16,14 @@ var transitions = map[domain.TaskStatus]map[domain.TaskStatus]bool{
 		domain.TaskAttention: true,
 	},
 	domain.TaskVerifying: {
-		domain.TaskRunning: true, domain.TaskCompleted: true,
+		domain.TaskRunning: true, domain.TaskWaiting: true, domain.TaskCompleted: true,
 		domain.TaskFailed: true, domain.TaskStopped: true, domain.TaskAttention: true,
+	},
+	domain.TaskWaiting: {
+		domain.TaskRunning: true, domain.TaskStopped: true, domain.TaskAttention: true,
+	},
+	domain.TaskAttention: {
+		domain.TaskRunning: true,
 	},
 }
 

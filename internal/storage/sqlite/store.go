@@ -152,8 +152,19 @@ func (s *Store) PutTask(task domain.Task) error {
 }
 
 func (s *Store) DeleteTask(id string) error {
-	if _, err := s.db.Exec(`DELETE FROM tasks WHERE id = ?`, id); err != nil {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return fmt.Errorf("begin deleting task %s: %w", id, err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	if _, err := tx.Exec(`DELETE FROM events WHERE task_id = ?`, id); err != nil {
+		return fmt.Errorf("delete task %s events: %w", id, err)
+	}
+	if _, err := tx.Exec(`DELETE FROM tasks WHERE id = ?`, id); err != nil {
 		return fmt.Errorf("delete task %s: %w", id, err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit deleting task %s: %w", id, err)
 	}
 	return nil
 }

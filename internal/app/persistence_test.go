@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"errors"
 	"path/filepath"
 	"testing"
 	"time"
@@ -53,6 +54,44 @@ func TestServiceRestoresTasksAndMarksInterruptedWorkForAttention(t *testing.T) {
 	}
 	if len(events) != 2 || events[0].Type != domain.EventTaskState || events[1].Type != domain.EventTaskAttention {
 		t.Fatalf("unexpected recovery events: %#v", events)
+	}
+}
+
+func TestServiceDeletesTerminalTaskAndDurableHistory(t *testing.T) {
+	store, err := sqlitestore.Open(filepath.Join(t.TempDir(), "foreman.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	now := time.Now().UTC()
+	task := domain.Task{
+		ID: "delete-me", Kind: domain.TaskKindAgent, Adapter: "test",
+		Status: domain.TaskCompleted, CreatedAt: now, UpdatedAt: now,
+	}
+	if err := store.PutTask(task); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.AppendEvent(domain.Event{TaskID: task.ID, Type: domain.EventTaskCreated, Timestamp: now}); err != nil {
+		t.Fatal(err)
+	}
+	registry, err := agent.NewRegistry(restoredTestAdapter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	bus := event.NewBusWithJournal(store)
+	service, err := NewServiceWithRegistryAndStore(context.Background(), registry, "test", bus, store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := service.DeleteTask(task.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.GetTask(task.ID); !errors.Is(err, ErrTaskNotFound) {
+		t.Fatalf("GetTask error=%v, want ErrTaskNotFound", err)
+	}
+	events, err := store.EventsAfter(0, task.ID)
+	if err != nil || len(events) != 0 {
+		t.Fatalf("events=%#v err=%v", events, err)
 	}
 }
 

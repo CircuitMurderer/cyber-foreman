@@ -12,6 +12,7 @@
 - 本地 HTTP API 和 SSE 事件流
 - React、TypeScript、HeroUI v3 Web 控制台
 - 对话记录弹窗与 Agent 流式 chunk 完整回复聚合
+- 同一 ACP session 的多轮继续对话、任务总结与历史删除
 - Go 1.26.8、Node.js 22.18 与 pnpm 用户级工具链
 - 项目内 OpenCode 1.18.31 与 ACP v1 Adapter
 
@@ -152,6 +153,16 @@ curl -X POST http://127.0.0.1:8090/api/v1/tasks/TASK_ID/actions \
   -d '{"type":"interrupt","message":"先检查现有接口，不要重写整个模块"}'
 ```
 
+Agent 一轮完成并通过验证后，交互式 REST 任务进入 `waiting_input`，OpenCode ACP session 会继续保留。此时可以不取消任何 turn，直接继续当前对话：
+
+```bash
+curl -X POST http://127.0.0.1:8090/api/v1/tasks/TASK_ID/actions \
+  -H 'Content-Type: application/json' \
+  -d '{"type":"continue","message":"继续实现，并把刚才提到的边界情况也补上测试"}'
+```
+
+任务响应中的 `available_actions` 会明确给出当前可执行的 `interrupt`、`continue`、`cancel` 和 `delete`。其中 `interrupt` 用于正在执行的 turn，`continue` 只用于已经等待输入且仍保有同一 session 的任务。
+
 创建普通命令任务：
 
 ```bash
@@ -169,7 +180,15 @@ curl -N http://127.0.0.1:8090/api/v1/tasks/TASK_ID/events
 curl -N -H 'Last-Event-ID: evt-42' http://127.0.0.1:8090/api/v1/tasks/TASK_ID/events
 ```
 
+删除已结束或等待输入的任务及其 SQLite 事件/对话历史：
+
+```bash
+curl -X DELETE http://127.0.0.1:8090/api/v1/tasks/TASK_ID
+```
+
 SSE 事件带有 `id`、`version`、`sequence` 和 `occurred_at`。`serve` 模式下 cursor 与事件历史由 SQLite 持久化，页面刷新或 Foreman 重启后仍可读取完整时间线；非持久化 CLI 模式保留最近 4096 个事件和约 16 MiB。测试或工作区验证任一失败时，任务不会进入 `completed`，而会进入 `attention_required`。
+
+Web 任务详情同时提供“任务总结”和“对话与回复”：前者聚合原始任务、最新完整回复、轮次、工具活动、监工干预和验证结论；后者保留逐轮完整对话。两者都从持久事件重建，不会把模型的流式 chunk 当作互相独立的最终答案。
 
 ## 目录
 

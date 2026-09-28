@@ -9,6 +9,7 @@ import {
   Clock3,
   GitBranch,
   MessageSquarePlus,
+  Send,
   Radio,
   ScrollText,
   ShieldAlert,
@@ -16,6 +17,7 @@ import {
 } from "lucide-react";
 import {
   cancelTask,
+  continueTask,
   errorMessage,
   getTask,
   interruptTask,
@@ -26,6 +28,7 @@ import {
 import {absoluteTime, shortID, statusLabel, statusTone} from "../status";
 import {useTaskEvents, type StreamState} from "../useTaskEvents";
 import {ConversationModal} from "./ConversationModal";
+import {TaskSummaryModal} from "./TaskSummaryModal";
 
 interface TaskDetailProps {
   task?: Task;
@@ -71,6 +74,21 @@ export function TaskDetail({task, onChanged}: TaskDetailProps) {
     }
   }
 
+  async function continueConversation() {
+    if (!task || !message.trim()) return;
+    setActing(true);
+    setActionError("");
+    try {
+      await continueTask(task.id, message.trim());
+      setMessage("");
+      await refresh();
+    } catch (error) {
+      setActionError(errorMessage(error));
+    } finally {
+      setActing(false);
+    }
+  }
+
   async function cancel() {
     if (!task || !window.confirm("确定停止这个任务？当前 Agent turn 会被取消。")) return;
     setActing(true);
@@ -85,8 +103,10 @@ export function TaskDetail({task, onChanged}: TaskDetailProps) {
     }
   }
 
-  const canInterrupt = task.kind === "agent" && task.status === "running";
-  const canCancel = !terminalStatuses.has(task.status);
+  const actions = new Set(task.available_actions ?? []);
+  const canInterrupt = actions.has("interrupt") || task.kind === "agent" && task.status === "running";
+  const canContinue = actions.has("continue");
+  const canCancel = actions.has("cancel") || !terminalStatuses.has(task.status);
 
   return (
     <section className="task-detail">
@@ -101,7 +121,10 @@ export function TaskDetail({task, onChanged}: TaskDetailProps) {
             <Chip color={statusTone[task.status]} variant="soft">{statusLabel[task.status]}</Chip>
             <StreamIndicator state={streamState} />
           </div>
-          {task.kind === "agent" && <ConversationModal task={task} events={events} />}
+          <div className="detail-actions">
+            <TaskSummaryModal task={task} events={events} />
+            {task.kind === "agent" && <ConversationModal task={task} events={events} />}
+          </div>
         </div>
       </div>
 
@@ -119,28 +142,34 @@ export function TaskDetail({task, onChanged}: TaskDetailProps) {
         <Metric icon={<CheckCircle2 size={17} />} value={metrics.verifications} label="验证结果" />
       </div>
 
-      {(canInterrupt || canCancel) && (
+      {(canInterrupt || canContinue || canCancel) && (
         <Card className="action-card" variant="secondary">
           <Card.Header>
             <div>
-              <Card.Title>人工干预</Card.Title>
-              <Card.Description>动作会进入任务 mailbox，并保留在监督事件中。</Card.Description>
+              <Card.Title>{canContinue ? "继续当前任务" : "人工干预"}</Card.Title>
+              <Card.Description>{canContinue ? "复用同一个 Agent session 继续对话，不会取消上一轮。" : "动作会进入任务 mailbox，并保留在监督事件中。"}</Card.Description>
             </div>
           </Card.Header>
           <Card.Content className="action-content">
-            {canInterrupt && (
+            {(canInterrupt || canContinue) && (
               <div className="interrupt-row">
                 <textarea
                   className="control textarea"
                   rows={2}
                   value={message}
                   onChange={(event) => setMessage(event.target.value)}
-                  placeholder="补充上下文，或要求 Agent 调整方向……"
+                  placeholder={canContinue ? "继续追问，或给 Agent 新的后续任务……" : "补充上下文，或要求 Agent 调整方向……"}
                   disabled={acting}
                 />
-                <Button variant="secondary" onPress={interrupt} isDisabled={acting || !message.trim()}>
-                  <MessageSquarePlus size={16} /> 打断并追加
-                </Button>
+                {canContinue ? (
+                  <Button variant="primary" onPress={continueConversation} isDisabled={acting || !message.trim()}>
+                    <Send size={16} /> 继续对话
+                  </Button>
+                ) : (
+                  <Button variant="secondary" onPress={interrupt} isDisabled={acting || !message.trim()}>
+                    <MessageSquarePlus size={16} /> 打断并追加
+                  </Button>
+                )}
               </div>
             )}
             {canCancel && (

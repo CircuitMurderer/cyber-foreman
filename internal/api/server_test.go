@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -88,6 +89,52 @@ func TestEventResponseRedactsSecretsAndCapsPayload(t *testing.T) {
 	}
 	if !strings.Contains(string(encoded), `"truncated":true`) {
 		t.Fatalf("large event was not capped: %s", encoded)
+	}
+}
+
+func TestDeleteTaskRemovesCompletedTask(t *testing.T) {
+	service, bus := newAPITestService(t)
+	task, err := service.StartTask(app.StartTaskRequest{Command: []string{"ignored"}, CWD: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		current, getErr := service.GetTask(task.ID)
+		if getErr != nil {
+			t.Fatal(getErr)
+		}
+		if current.Status.Terminal() {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	current, err := service.GetTask(task.ID)
+	if err != nil || !current.Status.Terminal() {
+		t.Fatalf("task did not finish: %#v err=%v", current, err)
+	}
+	request := httptest.NewRequest(http.MethodDelete, "/api/v1/tasks/"+task.ID, nil)
+	request.SetPathValue("id", task.ID)
+	recorder := httptest.NewRecorder()
+	NewServer(service, bus).Handler().ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusNoContent {
+		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	if _, err := service.GetTask(task.ID); !errors.Is(err, app.ErrTaskNotFound) {
+		t.Fatalf("GetTask error=%v, want ErrTaskNotFound", err)
+	}
+}
+
+func TestAgentRequestIsInteractive(t *testing.T) {
+	request := createTaskRequest{
+		Adapter: "opencode", Input: taskInput{Prompt: "continue later"},
+	}
+	converted, err := request.appRequest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !converted.Interactive {
+		t.Fatal("REST agent task was not marked interactive")
 	}
 }
 

@@ -16,10 +16,12 @@ func TestCanTransition(t *testing.T) {
 		{"start", domain.TaskQueued, domain.TaskRunning, true},
 		{"verify", domain.TaskRunning, domain.TaskVerifying, true},
 		{"complete", domain.TaskVerifying, domain.TaskCompleted, true},
+		{"await follow-up", domain.TaskVerifying, domain.TaskWaiting, true},
+		{"continue conversation", domain.TaskWaiting, domain.TaskRunning, true},
 		{"skip verification", domain.TaskRunning, domain.TaskCompleted, false},
 		{"running needs attention", domain.TaskRunning, domain.TaskAttention, true},
 		{"verification needs attention", domain.TaskVerifying, domain.TaskAttention, true},
-		{"attention is terminal", domain.TaskAttention, domain.TaskRunning, false},
+		{"repair attention task", domain.TaskAttention, domain.TaskRunning, true},
 		{"restart completed", domain.TaskCompleted, domain.TaskRunning, false},
 	}
 

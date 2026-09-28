@@ -18,6 +18,7 @@ const (
 	TaskRunning    TaskStatus = "running"
 	TaskRecovering TaskStatus = "recovering"
 	TaskVerifying  TaskStatus = "verifying"
+	TaskWaiting    TaskStatus = "waiting_input"
 	TaskCompleted  TaskStatus = "completed"
 	TaskFailed     TaskStatus = "failed"
 	TaskStopped    TaskStatus = "stopped"

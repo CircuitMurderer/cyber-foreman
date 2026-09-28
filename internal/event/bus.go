@@ -22,6 +22,7 @@ type Bus struct {
 	historySizes    []int
 	subs            map[uint64]chan domain.Event
 	journal         storage.EventJournal
+	forgotten       map[string]bool
 }
 
 const (
@@ -37,7 +38,10 @@ func NewBusWithHistory(limit int) *Bus {
 	if limit < 1 {
 		limit = 1
 	}
-	return &Bus{limit: limit, maxHistoryBytes: defaultMaxHistoryBytes, subs: make(map[uint64]chan domain.Event)}
+	return &Bus{
+		limit: limit, maxHistoryBytes: defaultMaxHistoryBytes,
+		subs: make(map[uint64]chan domain.Event), forgotten: make(map[string]bool),
+	}
 }
 
 func NewBusWithJournal(journal storage.EventJournal) *Bus {
@@ -56,6 +60,9 @@ func (b *Bus) Publish(event domain.Event) {
 func (b *Bus) PublishChecked(event domain.Event) error {
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	if b.forgotten[event.TaskID] {
+		return nil
+	}
 	event = compactEvent(event)
 	if b.journal != nil {
 		persisted, err := b.journal.AppendEvent(event)
@@ -132,6 +139,35 @@ func (b *Bus) Subscribe(ctx context.Context, buffer int) <-chan domain.Event {
 		b.mu.Unlock()
 	}()
 	return ch
+}
+
+// ForgetTask drops one task from the bounded in-memory replay window. The
+// durable journal is deleted by the task store in the same application action.
+func (b *Bus) ForgetTask(taskID string) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.forgotten[taskID] = true
+	history := b.history[:0]
+	sizes := b.historySizes[:0]
+	total := 0
+	for i, event := range b.history {
+		if event.TaskID == taskID {
+			continue
+		}
+		history = append(history, event)
+		sizes = append(sizes, b.historySizes[i])
+		total += b.historySizes[i]
+	}
+	b.history = history
+	b.historySizes = sizes
+	b.historyBytes = total
+}
+
+// RememberTask rolls back the publication guard when durable deletion fails.
+func (b *Bus) RememberTask(taskID string) {
+	b.mu.Lock()
+	delete(b.forgotten, taskID)
+	b.mu.Unlock()
 }
 
 // SubscribeSince atomically installs a live subscription and replays retained

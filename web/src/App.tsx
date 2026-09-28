@@ -1,7 +1,7 @@
 import {useCallback, useEffect, useMemo, useState} from "react";
 import {Button, Chip} from "@heroui/react";
 import {Activity, Bot, PanelLeftClose, PanelLeftOpen, ShieldCheck, Wifi, WifiOff} from "lucide-react";
-import {errorMessage, getAdapters, getTasks, terminalStatuses, type AdapterDescriptor, type Task} from "./api";
+import {deleteTask, errorMessage, getAdapters, getTasks, type AdapterDescriptor, type Task} from "./api";
 import {TaskComposer} from "./components/TaskComposer";
 import {TaskDetail} from "./components/TaskDetail";
 import {TaskList} from "./components/TaskList";
@@ -57,7 +57,7 @@ export function App() {
   }, [loadTasks]);
 
   const selectedTask = tasks.find((task) => task.id === selectedID);
-  const activeCount = useMemo(() => tasks.filter((task) => !terminalStatuses.has(task.status)).length, [tasks]);
+  const activeCount = useMemo(() => tasks.filter((task) => ["queued", "running", "recovering", "verifying"].includes(task.status)).length, [tasks]);
   const attentionCount = useMemo(() => tasks.filter((task) => task.status === "attention_required").length, [tasks]);
 
   function handleCreated(task: Task) {
@@ -69,6 +69,19 @@ export function App() {
 
   function handleChanged(task: Task) {
     setTasks((current) => current.map((item) => item.id === task.id ? task : item));
+  }
+
+  async function handleDelete(task: Task) {
+    if (!window.confirm(`确定删除任务 ${task.id}？任务及其完整事件和对话历史都会从本地数据库移除。`)) return;
+    try {
+      await deleteTask(task.id);
+      const next = tasks.filter((item) => item.id !== task.id);
+      setTasks(next);
+      setSelectedID((selected) => selected === task.id ? next[0]?.id : selected);
+      setError("");
+    } catch (caught) {
+      setError(errorMessage(caught));
+    }
   }
 
   return (
@@ -110,6 +123,7 @@ export function App() {
             selectedID={selectedID}
             loading={loading}
             onSelect={setSelectedID}
+            onDelete={(task) => void handleDelete(task)}
             onRefresh={() => void loadTasks()}
           />
           <footer className="sidebar-footer"><ShieldCheck size={14} /> 完成状态只由后端验证门禁决定</footer>

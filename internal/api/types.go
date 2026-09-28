@@ -70,6 +70,7 @@ type taskResponse struct {
 	Error     string            `json:"error,omitempty"`
 	CreatedAt time.Time         `json:"created_at"`
 	UpdatedAt time.Time         `json:"updated_at"`
+	Actions   []string          `json:"available_actions,omitempty"`
 	Links     taskLinks         `json:"links"`
 }
 
@@ -79,12 +80,12 @@ type taskLinks struct {
 	Actions string `json:"actions"`
 }
 
-func newTaskResponse(task domain.Task) taskResponse {
+func newTaskResponse(task domain.Task, actions ...string) taskResponse {
 	base := "/api/v1/tasks/" + task.ID
 	return taskResponse{
 		ID: task.ID, Kind: task.Kind, Adapter: task.Adapter, Workspace: task.CWD,
 		Status: task.Status, ExitCode: task.ExitCode, Error: task.Error,
-		CreatedAt: task.CreatedAt, UpdatedAt: task.UpdatedAt,
+		CreatedAt: task.CreatedAt, UpdatedAt: task.UpdatedAt, Actions: actions,
 		Links: taskLinks{Self: base, Events: base + "/events", Actions: base + "/actions"},
 	}
 }
@@ -121,7 +122,7 @@ func (r createTaskRequest) appRequest() (app.StartTaskRequest, error) {
 	}
 	return app.StartTaskRequest{
 		Adapter: r.Adapter, Prompt: prompt, Command: append([]string(nil), r.Input.Command...),
-		Model: r.Model, CWD: r.Workspace, Supervision: policy,
+		Model: r.Model, CWD: r.Workspace, Supervision: policy, Interactive: prompt != "",
 		Verification: app.VerificationRequest{
 			Workspace: r.Verification.Workspace, Commands: commands,
 			WorkspacePolicy: verification.WorkspacePolicy{

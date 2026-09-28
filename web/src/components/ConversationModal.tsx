@@ -2,21 +2,12 @@ import {useMemo, useState} from "react";
 import {Button, Modal} from "@heroui/react";
 import {Bot, Check, Copy, MessageSquareText, ShieldCheck, UserRound} from "lucide-react";
 import type {ForemanEvent, Task} from "../api";
+import {buildConversation, type ConversationMessage, type ConversationRole} from "../conversation";
 import {absoluteTime} from "../status";
 
 interface ConversationModalProps {
   task: Task;
   events: ForemanEvent[];
-}
-
-type ConversationRole = "operator" | "supervisor" | "assistant";
-
-interface ConversationMessage {
-  id: string;
-  role: ConversationRole;
-  text: string;
-  occurredAt: string;
-  responseIndex?: number;
 }
 
 export function ConversationModal({task, events}: ConversationModalProps) {
@@ -123,54 +114,6 @@ function EmptyConversation({text}: {text: string}) {
   return <div className="conversation-empty"><MessageSquareText size={24} /><span>{text}</span></div>;
 }
 
-function buildConversation(events: ForemanEvent[]): ConversationMessage[] {
-  const messages: ConversationMessage[] = [];
-  let activeAssistant: ConversationMessage | undefined;
-  let responseIndex = 0;
-
-  for (const event of [...events].sort((left, right) => left.sequence - right.sequence)) {
-    if (event.type === "conversation.message") {
-      const data = asRecord(event.data);
-      const text = typeof data?.text === "string" ? data.text : "";
-      if (!text) continue;
-      const source = data?.source === "supervisor" ? "supervisor" : "operator";
-      messages.push({id: event.id, role: source, text, occurredAt: event.occurred_at});
-      activeAssistant = undefined;
-      continue;
-    }
-
-    if (event.type === "agent.follow_up_started") {
-      activeAssistant = undefined;
-      continue;
-    }
-
-    const chunk = agentTextChunk(event);
-    if (!chunk) continue;
-    if (!activeAssistant) {
-      responseIndex++;
-      activeAssistant = {
-        id: `response-${event.id || event.sequence}`,
-        role: "assistant",
-        text: "",
-        occurredAt: event.occurred_at,
-        responseIndex
-      };
-      messages.push(activeAssistant);
-    }
-    activeAssistant.text += chunk;
-  }
-
-  return messages;
-}
-
-function agentTextChunk(event: ForemanEvent): string {
-  if (event.type !== "agent.session_update") return "";
-  const update = asRecord(asRecord(event.data)?.update);
-  if (update?.sessionUpdate !== "agent_message_chunk") return "";
-  const content = asRecord(update.content);
-  return typeof content?.text === "string" ? content.text : "";
-}
-
 function roleLabel(role: ConversationRole): string {
   if (role === "supervisor") return "监工";
   if (role === "assistant") return "Agent";
@@ -181,8 +124,4 @@ function roleIcon(role: ConversationRole) {
   if (role === "supervisor") return <ShieldCheck size={15} />;
   if (role === "assistant") return <Bot size={15} />;
   return <UserRound size={15} />;
-}
-
-function asRecord(value: unknown): Record<string, unknown> | undefined {
-  return value !== null && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
 }

@@ -25,6 +25,7 @@ var (
 	ErrInvalidTransition = errors.New("invalid task state transition")
 	ErrTaskNotRunning    = errors.New("task is not running")
 	ErrActionUnavailable = errors.New("task action is unavailable")
+	ErrTaskNotDeletable  = errors.New("running task must be stopped before deletion")
 )
 
 type StartTaskRequest struct {
@@ -33,6 +34,7 @@ type StartTaskRequest struct {
 	Prompt        string              `json:"prompt,omitempty"`
 	Model         string              `json:"model,omitempty"`
 	InterruptWith string              `json:"interrupt_with,omitempty"`
+	Interactive   bool                `json:"interactive,omitempty"`
 	CWD           string              `json:"cwd,omitempty"`
 	Verification  VerificationRequest `json:"verification,omitempty"`
 	Supervision   *supervisor.Policy  `json:"supervision,omitempty"`
@@ -65,6 +67,7 @@ type taskRuntime struct {
 	baseline      *verification.WorkspaceBaseline
 	prompt        string
 	interruptWith string
+	interactive   bool
 	policy        supervisor.Policy
 }
 
@@ -75,6 +78,7 @@ type taskAction struct {
 }
 
 const taskActionInterrupt = "interrupt"
+const taskActionContinue = "continue"
 
 func NewService(ctx context.Context, adapter agent.Adapter, bus *event.Bus) *Service {
 	registry, err := agent.NewRegistry(adapter)
@@ -292,7 +296,7 @@ func (s *Service) startQueuedTask(taskID string, req StartTaskRequest, adapter a
 	s.runtimes[t.ID] = taskRuntime{
 		adapter: adapter, sessionID: session.ID, cancel: cancel, actions: make(chan taskAction, 1),
 		verification: cloneVerificationRequest(req.Verification), baseline: baseline,
-		prompt: req.Prompt, interruptWith: req.InterruptWith, policy: policy,
+		prompt: req.Prompt, interruptWith: req.InterruptWith, interactive: req.Interactive, policy: policy,
 	}
 	s.mu.Unlock()
 	if err := s.transition(t.ID, domain.TaskRunning, "agent process started"); err != nil {
@@ -338,6 +342,30 @@ func (s *Service) ListTasks() []domain.Task {
 	return tasks
 }
 
+func (s *Service) AvailableActions(id string) []string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	t := s.tasks[id]
+	if t == nil {
+		return nil
+	}
+	runtime, hasRuntime := s.runtimes[id]
+	actions := make([]string, 0, 3)
+	if hasRuntime && t.Kind == domain.TaskKindAgent && t.Status == domain.TaskRunning && runtime.adapter.Capabilities().CancelTurn {
+		actions = append(actions, "interrupt")
+	}
+	if hasRuntime && runtime.interactive && (t.Status == domain.TaskWaiting || t.Status == domain.TaskAttention) {
+		actions = append(actions, "continue")
+	}
+	if !t.Status.Terminal() || hasRuntime {
+		actions = append(actions, "cancel")
+	}
+	if t.Status.Terminal() || t.Status == domain.TaskWaiting {
+		actions = append(actions, "delete")
+	}
+	return actions
+}
+
 func (s *Service) StopTask(id string) error {
 	s.mu.RLock()
 	runtime, ok := s.runtimes[id]
@@ -356,6 +384,13 @@ func (s *Service) StopTask(id string) error {
 	stopCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 	_ = runtime.adapter.Stop(stopCtx, runtime.sessionID)
+	current, err := s.GetTask(id)
+	if err != nil {
+		return err
+	}
+	if current.Status.Terminal() {
+		return nil
+	}
 	return s.transition(id, domain.TaskStopped, "stopped by operator")
 }
 
@@ -394,6 +429,72 @@ func (s *Service) InterruptTask(ctx context.Context, id, message string) error {
 	case <-ctx.Done():
 		return ctx.Err()
 	}
+}
+
+// ContinueTask sends a new prompt through the existing agent session without
+// cancelling a turn. It is accepted only while an interactive task is idle.
+func (s *Service) ContinueTask(ctx context.Context, id, message string) error {
+	if message == "" {
+		return errors.New("continue message is required")
+	}
+	s.mu.RLock()
+	runtime, ok := s.runtimes[id]
+	t := s.tasks[id]
+	s.mu.RUnlock()
+	if t == nil {
+		return ErrTaskNotFound
+	}
+	if !ok || !runtime.interactive || runtime.actions == nil || t.Kind != domain.TaskKindAgent ||
+		(t.Status != domain.TaskWaiting && t.Status != domain.TaskAttention) {
+		return ErrActionUnavailable
+	}
+	action := taskAction{kind: taskActionContinue, message: message, result: make(chan error, 1)}
+	select {
+	case runtime.actions <- action:
+	case <-ctx.Done():
+		return ctx.Err()
+	default:
+		return ErrActionUnavailable
+	}
+	select {
+	case err := <-action.result:
+		return err
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+// DeleteTask removes a quiescent task and its durable event history. Active
+// tasks must be stopped first so deletion cannot hide a running process.
+func (s *Service) DeleteTask(id string) error {
+	s.mu.RLock()
+	t := s.tasks[id]
+	runtime, hasRuntime := s.runtimes[id]
+	s.mu.RUnlock()
+	if t == nil {
+		return ErrTaskNotFound
+	}
+	if !t.Status.Terminal() && t.Status != domain.TaskWaiting {
+		return ErrTaskNotDeletable
+	}
+	s.bus.ForgetTask(id)
+	if hasRuntime {
+		runtime.cancel()
+		stopCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		_ = runtime.adapter.Stop(stopCtx, runtime.sessionID)
+		cancel()
+	}
+	if s.store != nil {
+		if err := s.store.DeleteTask(id); err != nil {
+			s.bus.RememberTask(id)
+			return err
+		}
+	}
+	s.mu.Lock()
+	delete(s.tasks, id)
+	delete(s.runtimes, id)
+	s.mu.Unlock()
+	return nil
 }
 
 func (s *Service) consume(ctx context.Context, taskID string, events <-chan domain.Event) {
@@ -462,11 +563,23 @@ func (s *Service) runVerification(ctx context.Context, taskID string, runtime ta
 		}
 	}
 	if !required {
-		_ = s.transition(taskID, domain.TaskCompleted, "process command exited successfully; no additional verifier configured")
+		status := domain.TaskCompleted
+		reason := "process command exited successfully; no additional verifier configured"
+		if runtime.interactive {
+			status = domain.TaskWaiting
+			reason = "agent turn finished; waiting for operator follow-up"
+		}
+		_ = s.transition(taskID, status, reason)
 		return
 	}
 	if passed {
-		_ = s.transition(taskID, domain.TaskCompleted, "all configured verifiers passed")
+		status := domain.TaskCompleted
+		reason := "all configured verifiers passed"
+		if runtime.interactive {
+			status = domain.TaskWaiting
+			reason = "all configured verifiers passed; waiting for operator follow-up"
+		}
+		_ = s.transition(taskID, status, reason)
 		return
 	}
 	_ = s.requireAttention(taskID, "deterministic verification failed")
@@ -570,6 +683,10 @@ func (s *Service) transition(id string, to domain.TaskStatus, reason string) err
 	updated := cloneTask(t)
 	updated.Status = to
 	updated.UpdatedAt = time.Now().UTC()
+	if to == domain.TaskRunning && (from == domain.TaskWaiting || from == domain.TaskAttention) {
+		updated.Error = ""
+		updated.ExitCode = nil
+	}
 	if s.store != nil {
 		if err := s.store.PutTask(updated); err != nil {
 			s.mu.Unlock()

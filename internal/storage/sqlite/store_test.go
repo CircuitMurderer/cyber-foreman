@@ -97,3 +97,36 @@ func TestStorePersistsAcrossReopen(t *testing.T) {
 		t.Fatalf("sequence=%d, want 2", event.Sequence)
 	}
 }
+
+func TestDeleteTaskRemovesSnapshotAndEventHistory(t *testing.T) {
+	store, err := Open(filepath.Join(t.TempDir(), "foreman.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	now := time.Now().UTC()
+	task := domain.Task{
+		ID: "task-delete", Kind: domain.TaskKindAgent, Adapter: "opencode",
+		Status: domain.TaskCompleted, CreatedAt: now, UpdatedAt: now,
+	}
+	if err := store.PutTask(task); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.AppendEvent(domain.Event{TaskID: task.ID, Type: domain.EventTaskCreated, Timestamp: now}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.DeleteTask(task.ID); err != nil {
+		t.Fatal(err)
+	}
+	tasks, err := store.ListTasks()
+	if err != nil {
+		t.Fatal(err)
+	}
+	events, err := store.EventsAfter(0, task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tasks) != 0 || len(events) != 0 {
+		t.Fatalf("tasks=%#v events=%#v", tasks, events)
+	}
+}

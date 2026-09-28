@@ -76,6 +76,27 @@ func (s *Service) consumePrompt(ctx context.Context, taskID string, events <-cha
 	for {
 		select {
 		case action := <-runtime.actions:
+			if action.kind == taskActionContinue {
+				if promptActive || pendingFollowUp != "" {
+					action.result <- ErrActionUnavailable
+					continue
+				}
+				current, err := s.GetTask(taskID)
+				if err != nil || (current.Status != domain.TaskWaiting && current.Status != domain.TaskAttention) {
+					action.result <- ErrActionUnavailable
+					continue
+				}
+				if err := s.transition(taskID, domain.TaskRunning, "operator continued the conversation"); err != nil {
+					action.result <- err
+					continue
+				}
+				snapshot = newPromptSnapshot(taskID, runtime.policy)
+				startPrompt(action.message, "operator")
+				idleC = resetTaskTimer(idleTimer, runtime.policy.IdleTimeout)
+				hardC = resetTaskTimer(hardTimer, runtime.policy.HardTimeout)
+				action.result <- nil
+				continue
+			}
 			if action.kind != taskActionInterrupt || !promptActive || pendingFollowUp != "" {
 				action.result <- ErrActionUnavailable
 				continue
@@ -162,6 +183,11 @@ func (s *Service) consumePrompt(ctx context.Context, taskID string, events <-cha
 			}
 			if outcome.err != nil {
 				_ = s.requireAttention(taskID, "OpenCode prompt failed: "+outcome.err.Error())
+				if runtime.interactive {
+					idleC = stopTaskTimer(idleTimer)
+					hardC = stopTaskTimer(hardTimer)
+					continue
+				}
 				return
 			}
 			sequence++
@@ -185,6 +211,15 @@ func (s *Service) consumePrompt(ctx context.Context, taskID string, events <-cha
 				return
 			}
 			s.runVerification(ctx, taskID, runtime)
+			if runtime.interactive {
+				current, err := s.GetTask(taskID)
+				if err == nil && (current.Status == domain.TaskWaiting || current.Status == domain.TaskAttention) {
+					snapshot.Status = current.Status
+					idleC = stopTaskTimer(idleTimer)
+					hardC = stopTaskTimer(hardTimer)
+					continue
+				}
+			}
 			return
 		case <-idleC:
 			idleC = nil
@@ -286,6 +321,27 @@ func taskTimer(duration time.Duration) (*time.Timer, <-chan time.Time) {
 	}
 	timer := time.NewTimer(duration)
 	return timer, timer.C
+}
+
+func stopTaskTimer(timer *time.Timer) <-chan time.Time {
+	if timer == nil {
+		return nil
+	}
+	if !timer.Stop() {
+		select {
+		case <-timer.C:
+		default:
+		}
+	}
+	return nil
+}
+
+func newPromptSnapshot(taskID string, policy supervisor.Policy) supervisor.Snapshot {
+	now := time.Now().UTC()
+	return supervisor.Snapshot{
+		TaskID: taskID, Status: domain.TaskRunning, Policy: policy,
+		StartedAt: now, LastProgressAt: now, AppliedDecisions: make(map[string]bool),
+	}
 }
 
 func resetTaskTimer(timer *time.Timer, duration time.Duration) <-chan time.Time {

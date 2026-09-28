@@ -69,3 +69,22 @@ func TestBusCapsLargePayloadInReplayHistory(t *testing.T) {
 		t.Fatalf("large replay payload was not capped: %#v", event.Data)
 	}
 }
+
+func TestForgetTaskRemovesOnlyItsReplayHistory(t *testing.T) {
+	bus := NewBusWithHistory(8)
+	bus.Publish(domain.Event{TaskID: "remove", Type: domain.EventAgentOutput})
+	bus.Publish(domain.Event{TaskID: "keep", Type: domain.EventAgentOutput})
+	bus.ForgetTask("remove")
+	bus.Publish(domain.Event{TaskID: "remove", Type: domain.EventAgentOutput})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	events, _ := bus.SubscribeSince(ctx, 0, 1)
+	select {
+	case event := <-events:
+		if event.TaskID != "keep" {
+			t.Fatalf("replayed task %q, want keep", event.TaskID)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for replay")
+	}
+}
