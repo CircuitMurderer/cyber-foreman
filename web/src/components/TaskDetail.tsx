@@ -43,7 +43,7 @@ export function TaskDetail({task, onChanged}: TaskDetailProps) {
     return (
       <section className="detail-empty">
         <div className="detail-empty-glyph"><Activity size={34} /></div>
-        <div className="eyebrow">LIVE SUPERVISION</div>
+        <div className="eyebrow">任务详情</div>
         <h2>选择一个任务</h2>
         <p>这里会显示 Agent 的实时活动、监工决策和完成门禁。</p>
       </section>

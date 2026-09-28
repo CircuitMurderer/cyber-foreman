@@ -16,7 +16,7 @@ export function TaskList({tasks, selectedID, loading, onSelect, onRefresh}: Task
     <section className="task-list-panel">
       <div className="section-heading">
         <div>
-          <div className="eyebrow">WORK QUEUE</div>
+          <div className="eyebrow">任务管理</div>
           <h2>任务队列 <span>{tasks.length}</span></h2>
         </div>
         <Button variant="ghost" size="sm" isIconOnly aria-label="刷新任务" onPress={onRefresh}>

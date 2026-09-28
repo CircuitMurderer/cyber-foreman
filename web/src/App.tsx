@@ -80,8 +80,8 @@ export function App() {
         <div className="brand-block">
           <div className="brand-icon"><Bot size={23} /></div>
           <div>
-            <div className="brand-title">CYBER FOREMAN</div>
-            <div className="brand-subtitle">赛博监工 · Local control plane</div>
+            <div className="brand-title">赛博监工</div>
+            <div className="brand-subtitle">Cyber Foreman · 本地 Agent 控制台</div>
           </div>
         </div>
         <div className="header-metrics">

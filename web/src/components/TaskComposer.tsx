@@ -100,7 +100,7 @@ export function TaskComposer({adapters, onCreated}: TaskComposerProps) {
     <Card className="composer-card" variant="secondary">
       <Card.Header className="composer-header">
         <div>
-          <div className="eyebrow">NEW ASSIGNMENT</div>
+          <div className="eyebrow">任务配置</div>
           <Card.Title>派发新任务</Card.Title>
           <Card.Description>监工会持续观察、纠偏并执行完成门禁。</Card.Description>
         </div>
