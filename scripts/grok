@@ -10,7 +10,8 @@ if [ ! -x "$GROK_BIN" ]; then
   exit 1
 fi
 
-mkdir -p "$PROJECT_DIR/.cache/grok"
+GROK_HOME_DIR=${GROK_HOME:-"$PROJECT_DIR/.cache/grok"}
+mkdir -p "$GROK_HOME_DIR"
 
-GROK_HOME="$PROJECT_DIR/.cache/grok" \
+GROK_HOME="$GROK_HOME_DIR" \
 exec "$GROK_BIN" "$@"

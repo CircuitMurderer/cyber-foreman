@@ -140,6 +140,10 @@ func serve(ctx context.Context, args []string) error {
 	opencodeBinary := flags.String("opencode-bin", defaultOpenCodeCommand(), "OpenCode executable or command on PATH")
 	grokBinary := flags.String("grok-bin", defaultGrokCommand(), "Grok Build executable or command on PATH")
 	codexBinary := flags.String("codex-bin", "codex", "Codex CLI executable or command on PATH")
+	codexAPIBase := flags.String("codex-api-base", "", "model API base URL for Codex; empty uses Codex login")
+	codexAPIKeyEnv := flags.String("codex-api-key-env", "OPENAI_API_KEY", "environment variable containing the Codex provider API key")
+	codexModel := flags.String("codex-model", "", "default Codex model when --codex-api-base is set")
+	codexAPIFormat := flags.String("codex-api-format", "chat-completions", "Codex provider wire format: responses, chat-completions, or anthropic-messages")
 	agentsFile := flags.String("agents-file", "", "JSON file containing custom ACP agent profiles")
 	webDir := flags.String("web-dir", "web/dist", "Vite production build directory; empty disables the web console")
 	databasePath := flags.String("db", "data/foreman.db", "SQLite database path")
@@ -176,7 +180,14 @@ func serve(ctx context.Context, args []string) error {
 		}
 		configuredAdapters = append(configuredAdapters, adapter)
 	}
-	codexAdapter, err := codexadapter.NewAdapter(codexadapter.Config{Binary: *codexBinary})
+	codexConfig := codexadapter.Config{Binary: *codexBinary}
+	if strings.TrimSpace(*codexAPIBase) != "" {
+		codexConfig.Provider = &codexadapter.ProviderConfig{
+			BaseURL: *codexAPIBase, APIKeyEnv: *codexAPIKeyEnv, DefaultModel: *codexModel,
+			Protocol: codexadapter.ProviderProtocol(*codexAPIFormat),
+		}
+	}
+	codexAdapter, err := codexadapter.NewAdapter(codexConfig)
 	if err != nil {
 		return fmt.Errorf("configure Codex adapter: %w", err)
 	}
@@ -302,7 +313,7 @@ func printUsage() {
 	fmt.Print(`赛博监工 (cyber-foreman)
 
 Usage:
-  foreman serve [--addr 127.0.0.1:8090] [--opencode-bin PATH] [--grok-bin PATH] [--codex-bin PATH] [--agents-file agents.json] [--web-dir web/dist] [--db data/foreman.db]
+  foreman serve [--addr 127.0.0.1:8090] [--opencode-bin PATH] [--grok-bin PATH] [--codex-bin PATH] [--codex-api-base URL --codex-api-key-env NAME --codex-model MODEL --codex-api-format FORMAT] [--agents-file agents.json] [--web-dir web/dist] [--db data/foreman.db]
   foreman run [--timeout 10m] [--cwd PATH] -- COMMAND [ARG...]
   foreman opencode [--model google/MODEL] [--idle-timeout 90s] [--timeout 10m] [--interrupt-with TEXT] --prompt TEXT
 `)

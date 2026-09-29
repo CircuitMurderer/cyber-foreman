@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -29,6 +30,7 @@ type Config struct {
 	Binary           string
 	Args             []string
 	Env              []string
+	Provider         *ProviderConfig
 	HandshakeTimeout time.Duration
 	GracePeriod      time.Duration
 }
@@ -50,6 +52,7 @@ type session struct {
 	cmd      *exec.Cmd
 	stdin    io.WriteCloser
 	client   *acp.Client
+	bridge   *responseBridge
 	events   chan domain.Event
 	done     chan struct{}
 	model    string
@@ -94,6 +97,20 @@ func NewAdapter(config Config) (*Adapter, error) {
 	if config.GracePeriod <= 0 {
 		config.GracePeriod = 3 * time.Second
 	}
+	if config.Provider != nil {
+		provider := *config.Provider
+		provider.BaseURL = strings.TrimSpace(provider.BaseURL)
+		provider.APIKeyEnv = strings.TrimSpace(provider.APIKeyEnv)
+		provider.DefaultModel = strings.TrimSpace(provider.DefaultModel)
+		provider.Protocol = ProviderProtocol(strings.TrimSpace(string(provider.Protocol)))
+		if provider.Protocol == "" {
+			provider.Protocol = ProtocolChatCompletions
+		}
+		if err := provider.validate(); err != nil {
+			return nil, err
+		}
+		config.Provider = &provider
+	}
 	a := &Adapter{config: config, sessions: make(map[string]*session)}
 	a.refreshExecutableStatus()
 	return a, nil
@@ -135,13 +152,24 @@ func (a *Adapter) Probe(parent context.Context) agent.Status {
 	ctx, cancel := context.WithTimeout(parent, a.config.HandshakeTimeout)
 	defer cancel()
 	version, versionErr := a.readVersion(ctx, executable)
-	if err := a.checkLogin(ctx, executable); err != nil {
-		a.setProbeFailure(executable, version, fmt.Errorf("Codex authentication unavailable: %w", err))
-		return a.Status()
+	if a.config.Provider == nil {
+		if err := a.checkLogin(ctx, executable); err != nil {
+			a.setProbeFailure(executable, version, fmt.Errorf("Codex authentication unavailable: %w", err))
+			return a.Status()
+		}
+	} else if a.config.Provider.APIKeyEnv != "" {
+		if key, ok := configuredEnv(a.config.Env, a.config.Provider.APIKeyEnv); !ok || strings.TrimSpace(key) == "" {
+			a.setProbeFailure(executable, version, fmt.Errorf("Codex API key environment variable %s is not set", a.config.Provider.APIKeyEnv))
+			return a.Status()
+		}
 	}
 
-	cmd := exec.CommandContext(ctx, executable, a.config.Args...)
-	cmd.Env = append(os.Environ(), a.config.Env...)
+	probeArgs := append([]string(nil), a.config.Args...)
+	if a.config.Provider != nil {
+		probeArgs = append(probeArgs, providerIsolationArgs()...)
+	}
+	cmd := exec.CommandContext(ctx, executable, probeArgs...)
+	cmd.Env = a.childEnv(nil)
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		a.setProbeFailure(executable, version, err)
@@ -199,31 +227,64 @@ func (a *Adapter) Start(ctx context.Context, req agent.StartRequest) (agent.Sess
 		return agent.Session{}, fmt.Errorf("resolve working directory: %w", err)
 	}
 
-	cmd := exec.CommandContext(ctx, executable, a.config.Args...)
+	var bridge *responseBridge
+	commandArgs := append([]string(nil), a.config.Args...)
+	if a.config.Provider != nil {
+		apiKey := ""
+		if a.config.Provider.APIKeyEnv != "" {
+			var ok bool
+			combinedEnv := append(append([]string(nil), a.config.Env...), req.Env...)
+			apiKey, ok = configuredEnv(combinedEnv, a.config.Provider.APIKeyEnv)
+			if !ok || strings.TrimSpace(apiKey) == "" {
+				return agent.Session{}, fmt.Errorf("Codex API key environment variable %s is not set", a.config.Provider.APIKeyEnv)
+			}
+		}
+		bridge, err = startResponseBridge(ctx, *a.config.Provider, strings.TrimSpace(apiKey))
+		if err != nil {
+			return agent.Session{}, err
+		}
+		commandArgs = append(commandArgs, providerArgs(bridge.BaseURL())...)
+	}
+	cmd := exec.CommandContext(ctx, executable, commandArgs...)
 	cmd.Dir = absCWD
-	cmd.Env = append(append(os.Environ(), a.config.Env...), req.Env...)
+	cmd.Env = a.childEnv(req.Env)
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
+		if bridge != nil {
+			bridge.Close()
+		}
 		return agent.Session{}, fmt.Errorf("Codex stdin: %w", err)
 	}
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
+		if bridge != nil {
+			bridge.Close()
+		}
 		return agent.Session{}, fmt.Errorf("Codex stdout: %w", err)
 	}
 	stderr, err := cmd.StderrPipe()
 	if err != nil {
+		if bridge != nil {
+			bridge.Close()
+		}
 		return agent.Session{}, fmt.Errorf("Codex stderr: %w", err)
 	}
 	if err := cmd.Start(); err != nil {
+		if bridge != nil {
+			bridge.Close()
+		}
 		a.setProbeFailure(executable, "", err)
 		return agent.Session{}, fmt.Errorf("start Codex App Server: %w", err)
 	}
 
 	s := &session{
-		taskID: req.TaskID, cmd: cmd, stdin: stdin,
+		taskID: req.TaskID, cmd: cmd, stdin: stdin, bridge: bridge,
 		events: make(chan domain.Event, 512), done: make(chan struct{}),
 		waiters: make(map[string]chan turnOutcome), completions: make(map[string]turnOutcome),
 		stderr: make(chan struct{}), notify: make(chan struct{}),
+	}
+	if a.config.Provider != nil {
+		s.model = a.config.Provider.DefaultModel
 	}
 	s.client = newAppServerClient(ctx, stdout, stdin, s.handleRequest)
 	go a.consumeStderr(s, stderr)
@@ -247,10 +308,15 @@ func (a *Adapter) Start(ctx context.Context, req agent.StartRequest) (agent.Sess
 			ID string `json:"id"`
 		} `json:"thread"`
 	}
-	if err := s.client.Call(handshakeCtx, "thread/start", map[string]any{
+	threadParams := map[string]any{
 		"cwd": absCWD, "approvalPolicy": "never", "sandbox": "workspace-write",
 		"ephemeral": true, "serviceName": "cyber-foreman",
-	}, &created); err != nil {
+	}
+	if a.config.Provider != nil {
+		threadParams["model"] = a.config.Provider.DefaultModel
+		threadParams["modelProvider"] = providerID
+	}
+	if err := s.client.Call(handshakeCtx, "thread/start", threadParams, &created); err != nil {
 		a.abortStart(s)
 		return agent.Session{}, fmt.Errorf("create Codex thread: %w", err)
 	}
@@ -263,14 +329,37 @@ func (a *Adapter) Start(ctx context.Context, req agent.StartRequest) (agent.Sess
 	a.sessions[s.id] = s
 	a.mu.Unlock()
 	a.setHealthy(executable, a.Status().Version, "")
-	s.emit(domain.Event{
-		TaskID: req.TaskID, SessionID: s.id, Type: domain.EventAgentStarted,
-		Timestamp: time.Now().UTC(), Data: map[string]any{
-			"adapter": "codex", "pid": cmd.Process.Pid, "protocol": "codex-app-server",
-			"protocol_version": appServerProtocolVersion, "user_agent": initialized.UserAgent,
-		},
-	})
+	startedData := map[string]any{
+		"adapter": "codex", "pid": cmd.Process.Pid, "protocol": "codex-app-server",
+		"protocol_version": appServerProtocolVersion, "user_agent": initialized.UserAgent,
+	}
+	if a.config.Provider != nil {
+		startedData["provider_mode"] = string(a.config.Provider.Protocol)
+		startedData["model"] = a.config.Provider.DefaultModel
+	}
+	s.emit(domain.Event{TaskID: req.TaskID, SessionID: s.id, Type: domain.EventAgentStarted, Timestamp: time.Now().UTC(), Data: startedData})
 	return agent.Session{ID: s.id}, nil
+}
+
+const providerID = "cyber_foreman"
+
+func providerArgs(baseURL string) []string {
+	arguments := []string{
+		"-c", "model_provider=" + strconv.Quote(providerID),
+		"-c", "model_providers." + providerID + ".name=" + strconv.Quote("Cyber Foreman API Bridge"),
+		"-c", "model_providers." + providerID + ".base_url=" + strconv.Quote(baseURL),
+		"-c", "model_providers." + providerID + ".wire_api=" + strconv.Quote("responses"),
+		"-c", "model_providers." + providerID + ".requires_openai_auth=false",
+	}
+	return append(arguments, providerIsolationArgs()...)
+}
+
+func providerIsolationArgs() []string {
+	return []string{
+		"-c", "analytics.enabled=false",
+		"-c", "features.remote_plugin=false",
+		"-c", "features.plugins=false",
+	}
 }
 
 func initializeParams() map[string]any {
@@ -592,6 +681,9 @@ func (a *Adapter) waitProcess(s *session) {
 	err := s.cmd.Wait()
 	<-s.stderr
 	s.client.Close(err)
+	if s.bridge != nil {
+		s.bridge.Close()
+	}
 	<-s.notify
 	disconnectError := ""
 	if err != nil && !s.stopping.Load() {
@@ -614,7 +706,7 @@ func (a *Adapter) waitProcess(s *session) {
 
 func (a *Adapter) readVersion(ctx context.Context, executable string) (string, error) {
 	cmd := exec.CommandContext(ctx, executable, "--version")
-	cmd.Env = append(os.Environ(), a.config.Env...)
+	cmd.Env = a.childEnv(nil)
 	var output bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &output, &output
 	err := cmd.Run()
@@ -630,7 +722,7 @@ func (a *Adapter) readVersion(ctx context.Context, executable string) (string, e
 
 func (a *Adapter) checkLogin(ctx context.Context, executable string) error {
 	cmd := exec.CommandContext(ctx, executable, "login", "status")
-	cmd.Env = append(os.Environ(), a.config.Env...)
+	cmd.Env = a.childEnv(nil)
 	var output bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &output, &output
 	if err := cmd.Run(); err != nil {
@@ -641,6 +733,35 @@ func (a *Adapter) checkLogin(ctx context.Context, executable string) error {
 		return errors.New(message)
 	}
 	return nil
+}
+
+func configuredEnv(overrides []string, name string) (string, bool) {
+	prefix := name + "="
+	for index := len(overrides) - 1; index >= 0; index-- {
+		if strings.HasPrefix(overrides[index], prefix) {
+			return strings.TrimPrefix(overrides[index], prefix), true
+		}
+	}
+	return os.LookupEnv(name)
+}
+
+func (a *Adapter) childEnv(extra []string) []string {
+	environment := append(append(append([]string(nil), os.Environ()...), a.config.Env...), extra...)
+	if a.config.Provider == nil || a.config.Provider.APIKeyEnv == "" {
+		return environment
+	}
+	return withoutEnv(environment, a.config.Provider.APIKeyEnv)
+}
+
+func withoutEnv(environment []string, name string) []string {
+	prefix := name + "="
+	filtered := make([]string, 0, len(environment))
+	for _, entry := range environment {
+		if !strings.HasPrefix(entry, prefix) {
+			filtered = append(filtered, entry)
+		}
+	}
+	return filtered
 }
 
 func resolveExecutable(command string) (string, error) {
@@ -707,6 +828,9 @@ func (a *Adapter) remove(sessionID string, expected *session) {
 
 func (a *Adapter) abortStart(s *session) {
 	s.stopping.Store(true)
+	if s.bridge != nil {
+		s.bridge.Close()
+	}
 	_ = s.stdin.Close()
 	if s.cmd.Process != nil {
 		_ = s.cmd.Process.Kill()

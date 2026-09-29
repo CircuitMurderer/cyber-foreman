@@ -15,7 +15,7 @@
 - 同一 ACP session 的多轮继续对话、任务总结与历史删除
 - Go 1.26.8、Node.js 22.18 与 pnpm 用户级工具链
 - 通用 ACP v1 Adapter、启动健康探测与 OpenCode/Grok Build preset
-- Codex App Server Adapter，共享 Codex CLI/桌面版登录态
+- Codex App Server Adapter，支持共享登录态或 Responses、Chat Completions、Anthropic Messages API
 - 项目内 OpenCode 1.18.31 测试工具
 
 ## 快速开始
@@ -37,7 +37,7 @@ pnpm --version
 直接监督一个命令：
 
 ```bash
-go run ./cmd/foreman run -- sh -c 'echo working; sleep 1; echo done'
+./scripts/go run ./cmd/foreman run -- sh -c 'echo working; sleep 1; echo done'
 ```
 
 安装前端依赖、构建前后端：
@@ -57,6 +57,35 @@ cd web && pnpm install && cd ..
 
 `serve` 默认把任务和完整事件时间线保存在 `data/foreman.db`。可通过 `--db /path/to/foreman.db` 修改位置；数据库目录不会提交到 Git。任务状态和事件索引使用关系字段，Agent 原始事件载荷使用 JSON，因此扩展新事件不需要为每种 payload 改表。服务重启时，无法恢复进程句柄或 ACP session 的未结束任务会被明确转为 `attention_required`。
 
+## 模型接口配置
+
+三个 Agent 都可以接 OpenAI-compatible 和 Anthropic-compatible API；Google 的优先级较低，目前 OpenCode 使用原生 Google Provider，Grok Build 和 Codex 使用 Google 官方 OpenAI compatibility。默认示例以 DeepSeek 验证，换成内网 Qwen 等服务时只需修改 base URL 和 model，不需要改 Adapter 或 REST API。
+
+密钥只通过启动 Foreman/Agent 时的环境变量提供：
+
+```bash
+export FOREMAN_AGENT_API_KEY_OPENAI="..."
+export FOREMAN_AGENT_API_KEY_ANTHROPIC="..."
+export FOREMAN_AGENT_API_KEY_GOOGLE="..."
+```
+
+本地开发可以把这些 `export` 放进已被 `.gitignore` 排除的 `.api_key`，运行前执行 `source .api_key`。仓库中的 [OpenCode provider catalog](config/opencode-providers.example.json) 和 [Grok Build provider template](config/grok-providers.example.toml) 只有环境变量名，没有密钥。
+
+| Agent | OpenAI | Anthropic | Google |
+|---|---|---|---|
+| OpenCode | `foreman-openai/deepseek-flash` | `foreman-anthropic/deepseek-flash` | `foreman-google/gemini-3.8-flash`（原生） |
+| Grok Build | `foreman-openai` | `foreman-anthropic` | `foreman-google`（OpenAI compatibility） |
+| Codex CLI | `responses` 或 `chat-completions` | `anthropic-messages` | `chat-completions`（OpenAI compatibility） |
+
+OpenCode 包装脚本默认加载上述 catalog；部署者显式设置 `OPENCODE_CONFIG` 时不会被覆盖。Grok Build 使用前复制一次模板：
+
+```bash
+mkdir -p .cache/grok
+cp config/grok-providers.example.toml .cache/grok/config.toml
+```
+
+`scripts/grok` 默认使用 `.cache/grok`，也尊重显式 `GROK_HOME`。格式和 Agent 的控制协议彼此独立：OpenCode/Grok 仍由 ACP 控制，Codex 仍由 App Server 控制。
+
 ## OpenCode ACP
 
 OpenCode 安装在 `.tools/opencode/1.18.31`，通过项目内包装脚本运行。包装脚本把 OpenCode 的配置、数据和缓存目录放在项目 `.cache/opencode`，并关闭自动更新检查，不修改全局环境：
@@ -65,26 +94,30 @@ OpenCode 安装在 `.tools/opencode/1.18.31`，通过项目内包装脚本运行
 ./scripts/opencode --version
 ```
 
-使用 Gemini 时，只在当前 shell 注入密钥，不要把密钥写进仓库：
+使用 provider catalog 中的模型：
 
 ```bash
-GOOGLE_GENERATIVE_AI_API_KEY="..." ./scripts/opencode models google
+source .api_key
+./scripts/opencode run -m foreman-openai/deepseek-flash "只回复 OK"
+./scripts/opencode run -m foreman-anthropic/deepseek-flash "只回复 OK"
+./scripts/opencode run -m foreman-google/gemini-3.8-flash "只回复 OK"
 ```
 
-包装脚本也兼容 `GEMINI_API_KEY`，运行时会把它映射为 OpenCode 原生 Google Provider 使用的 `GOOGLE_GENERATIVE_AI_API_KEY`，不会落盘。
+包装脚本会把 `FOREMAN_AGENT_API_KEY_GOOGLE` 映射给 OpenCode 原生 Google Provider；为兼容旧用法，也继续接受 `GEMINI_API_KEY` 和 `GOOGLE_GENERATIVE_AI_API_KEY`，不会把值落盘。
 
 通过 Cyber Foreman 启动 ACP 会话并发送 Prompt：
 
 ```bash
-GOOGLE_GENERATIVE_AI_API_KEY="..." go run ./cmd/foreman opencode \
-  --model "google/gemini-3.8-flash" \
+source .api_key
+./scripts/go run ./cmd/foreman opencode \
+  --model "foreman-openai/deepseek-flash" \
   --prompt "检查这个项目并概括当前架构"
 ```
 
 OpenCode Prompt 已由 `app.Service` mailbox 调度。可以配置空转和硬超时：
 
 ```bash
-GOOGLE_GENERATIVE_AI_API_KEY="..." go run ./cmd/foreman opencode \
+./scripts/go run ./cmd/foreman opencode \
   --idle-timeout 90s \
   --timeout 30m \
   --max-nudges 2 \
@@ -97,16 +130,15 @@ GOOGLE_GENERATIVE_AI_API_KEY="..." go run ./cmd/foreman opencode \
 在 OpenCode 开始输出后取消当前轮，并在同一会话中追加信息：
 
 ```bash
-GOOGLE_GENERATIVE_AI_API_KEY="..." go run ./cmd/foreman opencode \
-  --model "google/gemini-3.8-flash" \
+./scripts/go run ./cmd/foreman opencode \
+  --model "foreman-openai/deepseek-flash" \
   --prompt "先分析当前实现并给出完整方案" \
   --interrupt-with "补充信息：优先考虑完全离线部署，请据此重新回答"
 ```
 
 `--interrupt-with` 会在首个 Agent 文本片段出现后发送 ACP `session/cancel`，等待当前轮返回，再复用原 session ID 发送追加 Prompt。
 
-Adapter 与 Provider 解耦：Cyber Foreman 使用 ACP 控制 OpenCode，OpenCode 再使用其原生 Google Provider 调用 Gemini。未来接入 OpenAI 和 Anthropic 时不需要修改 ACP 协议层。
-当前 `foreman opencode` 默认模型是 `google/gemini-3.8-flash`，仍可通过 `--model` 覆盖。
+Adapter 与 Provider 解耦：Cyber Foreman 使用 ACP 控制 OpenCode，OpenCode 再用所选 Provider 调用模型。`foreman opencode` 的旧默认模型仍为 `google/gemini-3.8-flash`，实际使用内网模型时应通过 `--model` 显式选择。
 
 ## 通用 ACP Agent
 
@@ -122,21 +154,21 @@ Adapter 与 Provider 解耦：Cyber Foreman 使用 ACP 控制 OpenCode，OpenCod
 OpenCode 使用 `opencode acp`；Grok Build 使用 `grok --no-auto-update agent stdio`。命令可以是绝对/相对路径，也可以是 PATH 中的名称。
 仓库中存在可执行的 `scripts/opencode` 或 `scripts/grok` 时，`serve` 会优先使用对应的项目本地包装脚本；否则回退到 PATH。
 
-### Grok Build + Gemini
+### Grok Build Provider
 
-项目本地 Grok 二进制放在 `.tools/grok/grok`，运行状态与用户配置隔离在 `.cache/grok`。复制无密钥模板并在启动 Foreman 前注入环境变量：
+项目本地 Grok 二进制放在 `.tools/grok/grok`，运行状态与用户配置隔离在 `.cache/grok`。复制三格式无密钥模板并在启动 Foreman 前注入环境变量：
 
 ```bash
 mkdir -p .cache/grok
-cp config/grok-gemini.example.toml .cache/grok/config.toml
+cp config/grok-providers.example.toml .cache/grok/config.toml
 source .api_key
 export HTTPS_PROXY=http://127.0.0.1:7897
 export HTTP_PROXY=http://127.0.0.1:7897
 ./scripts/go run ./cmd/foreman serve \
-  --agents-file config/agents.gemini.example.json
+  --grok-bin ./scripts/grok
 ```
 
-模板使用 Google 官方 OpenAI-compatible 端点和 `gemini-3.8-flash`，API key 只从 `GOOGLE_GENERATIVE_AI_API_KEY` 读取，不会写入 TOML。`agents.gemini.example.json` 不声明 ACP `auth_methods`，因此由 Grok 的自定义 model/provider 环境完成认证；使用 xAI 登录或 `XAI_API_KEY` 时可改用默认 Grok preset，或在自定义 profile 中声明 `xai.api_key`、`cached_token`。
+模板默认使用 DeepSeek OpenAI-compatible 端点，同时提供 Anthropic Messages 和 Google OpenAI compatibility alias。API key 只从三个 `FOREMAN_AGENT_API_KEY_*` 环境变量读取，不会写入 TOML。使用 xAI 登录或 `XAI_API_KEY` 时仍可改用默认 Grok preset，或在自定义 profile 中声明 `xai.api_key`、`cached_token`。
 
 可先独立确认 Grok 与 Gemini 的链路：
 
@@ -144,7 +176,7 @@ export HTTP_PROXY=http://127.0.0.1:7897
 source .api_key
 HTTPS_PROXY=http://127.0.0.1:7897 \
 HTTP_PROXY=http://127.0.0.1:7897 \
-./scripts/grok --no-auto-update --model gemini-flash \
+./scripts/grok --no-auto-update --model foreman-openai \
   --permission-mode dontAsk --single "只回复 OK"
 ```
 
@@ -166,7 +198,7 @@ curl http://127.0.0.1:8090/api/v1/adapters
 
 ### Codex CLI
 
-Codex 不使用 ACP；Foreman 通过官方 `codex app-server` 的 JSONL 协议接入，并把 Codex 的流式消息、思考摘要、工具活动和审批请求转换为统一事件。启动时会执行 `codex login status`，但不会读取或保存 token。Codex CLI 与桌面版共用本机登录缓存，因此已登录桌面版的机器通常无需再次认证；也可先手动确认：
+Codex 不使用 ACP；Foreman 通过官方 `codex app-server` 的 JSONL 协议接入，并把 Codex 的流式消息、思考摘要、工具活动和审批请求转换为统一事件。登录态模式启动时会执行 `codex login status`，但不会读取或保存 token；API 模式只检查配置的密钥环境变量。Codex CLI 与桌面版共用本机登录缓存，因此已登录桌面版的机器通常无需再次认证；也可先手动确认：
 
 ```bash
 codex --version
@@ -175,6 +207,38 @@ codex login status
 ```
 
 每个 Foreman 任务启动一个临时 Codex thread，工作区采用 `workspace-write`，审批策略为 `never`；同一任务的“继续”会复用该 thread，打断则调用 `turn/interrupt`。若内网机器已预装并登录 Codex CLI，只需让 `codex` 位于 PATH，或显式传入 `--codex-bin`。
+
+内网也可以让 Codex 使用 Responses、OpenAI-compatible Chat Completions 或 Anthropic-compatible Messages，而不依赖 ChatGPT 登录。Foreman 为每个 Codex session 启动一个仅监听 loopback 的临时桥接器：Responses 原样转发，另外两种格式双向转换。API key 只从指定环境变量读取，并从 Codex 子进程环境中剥离，不会作为 Codex 参数、任务事件或数据库字段保存。API 模式还会关闭 Codex analytics、插件功能和远程插件目录刷新，避免启动时访问 ChatGPT/GitHub 控制面；模型请求仍按配置访问指定 API base。
+
+优先使用内网最常见的 OpenAI-compatible Chat Completions：
+
+```bash
+source .api_key
+export HTTP_PROXY=http://127.0.0.1:7897
+export HTTPS_PROXY=http://127.0.0.1:7897
+export ALL_PROXY=http://127.0.0.1:7897
+
+./scripts/go run ./cmd/foreman serve \
+  --codex-bin codex \
+  --codex-api-base https://api.deepseek.com \
+  --codex-api-key-env FOREMAN_AGENT_API_KEY_OPENAI \
+  --codex-model deepseek-flash \
+  --codex-api-format chat-completions
+```
+
+使用 Anthropic Messages 时改为：
+
+```bash
+./scripts/go run ./cmd/foreman serve \
+  --codex-api-base https://api.deepseek.com/anthropic \
+  --codex-api-key-env FOREMAN_AGENT_API_KEY_ANTHROPIC \
+  --codex-model deepseek-flash \
+  --codex-api-format anthropic-messages
+```
+
+若上游原生支持 Responses API，则使用 `--codex-api-format responses`。Google 现阶段使用 `https://generativelanguage.googleapis.com/v1beta/openai` 与 `chat-completions`。
+
+创建任务时选择 `adapter: "codex"` 即可；省略任务级 `model` 时使用 `--codex-model`，传入任务级 `model` 则只覆盖该任务后续 turn 的模型。`--codex-api-base` 留空时仍使用原来的 Codex/桌面版登录态。兼容层支持文本流、函数工具调用，以及 Gemini thought signature、DeepSeek reasoning content、Anthropic thinking signature 的跨轮回填；当前不转换 Responses API 专有的托管工具，例如 OpenAI web search。
 
 ## 确定性验证
 

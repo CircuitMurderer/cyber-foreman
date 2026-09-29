@@ -1,0 +1,48 @@
+# Copy this file to $GROK_HOME/config.toml. Keys are resolved from the
+# environment and are never persisted in this file.
+
+[models]
+default = "foreman-openai"
+session_summary = "foreman-summary"
+
+[model.foreman-openai]
+name = "DeepSeek Flash (OpenAI Chat Completions)"
+model = "deepseek-flash"
+base_url = "https://api.deepseek.com/"
+env_key = "FOREMAN_AGENT_API_KEY_OPENAI"
+api_backend = "chat_completions"
+context_window = 393216
+max_completion_tokens = 65536
+
+# DeepSeek maps deepseek-chat to the non-thinking request mode. Grok's session
+# title request uses a forced tool choice, which the thinking mode rejects.
+[model.foreman-summary]
+name = "DeepSeek Session Summary"
+model = "deepseek-chat"
+base_url = "https://api.deepseek.com/"
+env_key = "FOREMAN_AGENT_API_KEY_OPENAI"
+api_backend = "chat_completions"
+context_window = 393216
+max_completion_tokens = 1024
+
+[model.foreman-anthropic]
+name = "DeepSeek Flash (Anthropic Messages)"
+model = "deepseek-flash"
+base_url = "https://api.deepseek.com/anthropic/v1"
+api_backend = "messages"
+context_window = 393216
+max_completion_tokens = 65536
+extra_headers = { "anthropic-version" = "2023-06-01" }
+env_http_headers = { "x-api-key" = "FOREMAN_AGENT_API_KEY_ANTHROPIC" }
+
+# Grok Build currently exposes OpenAI Chat Completions, OpenAI Responses and
+# Anthropic Messages backends. Gemini is therefore connected through Google's
+# OpenAI-compatible endpoint until a native Google bridge is added.
+[model.foreman-google]
+name = "Gemini 3.8 Flash (Google OpenAI compatibility)"
+model = "gemini-3.8-flash"
+base_url = "https://generativelanguage.googleapis.com/v1beta/openai/"
+env_key = "FOREMAN_AGENT_API_KEY_GOOGLE"
+api_backend = "chat_completions"
+context_window = 1048576
+max_completion_tokens = 65536

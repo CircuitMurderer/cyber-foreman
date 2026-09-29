@@ -1,0 +1,46 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "provider": {
+    "foreman-openai": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "Foreman OpenAI-compatible",
+      "options": {
+        "baseURL": "https://api.deepseek.com",
+        "apiKey": "{env:FOREMAN_AGENT_API_KEY_OPENAI}"
+      },
+      "models": {
+        "deepseek-flash": {
+          "name": "DeepSeek Flash",
+          "limit": { "context": 393216, "output": 65536 }
+        }
+      }
+    },
+    "foreman-anthropic": {
+      "npm": "@ai-sdk/anthropic",
+      "name": "Foreman Anthropic-compatible",
+      "options": {
+        "baseURL": "https://api.deepseek.com/anthropic/v1",
+        "apiKey": "{env:FOREMAN_AGENT_API_KEY_ANTHROPIC}"
+      },
+      "models": {
+        "deepseek-flash": {
+          "name": "DeepSeek Flash",
+          "limit": { "context": 393216, "output": 65536 }
+        }
+      }
+    },
+    "foreman-google": {
+      "npm": "@ai-sdk/google",
+      "name": "Foreman Google",
+      "options": {
+        "apiKey": "{env:FOREMAN_AGENT_API_KEY_GOOGLE}"
+      },
+      "models": {
+        "gemini-3.8-flash": {
+          "name": "Gemini 3.8 Flash",
+          "limit": { "context": 1048576, "output": 65536 }
+        }
+      }
+    }
+  }
+}

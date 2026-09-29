@@ -16,11 +16,22 @@ mkdir -p \
   "$PROJECT_DIR/.cache/opencode/cache" \
   "$PROJECT_DIR/.cache/opencode/state"
 
-# OpenCode's native Google provider uses GOOGLE_GENERATIVE_AI_API_KEY. Accept the
-# shorter Gemini name as a local convenience without persisting either value.
+# OpenCode's built-in Google provider uses GOOGLE_GENERATIVE_AI_API_KEY. Prefer
+# the Foreman namespace while retaining the repository's older alias.
+if [ -n "${FOREMAN_AGENT_API_KEY_GOOGLE:-}" ] && [ -z "${GOOGLE_GENERATIVE_AI_API_KEY:-}" ]; then
+  GOOGLE_GENERATIVE_AI_API_KEY=$FOREMAN_AGENT_API_KEY_GOOGLE
+  export GOOGLE_GENERATIVE_AI_API_KEY
+fi
 if [ -n "${GEMINI_API_KEY:-}" ] && [ -z "${GOOGLE_GENERATIVE_AI_API_KEY:-}" ]; then
   GOOGLE_GENERATIVE_AI_API_KEY=$GEMINI_API_KEY
   export GOOGLE_GENERATIVE_AI_API_KEY
+fi
+
+# The checked-in provider catalog contains only endpoint metadata and env-var
+# references. Callers can override it with their own OPENCODE_CONFIG.
+if [ -z "${OPENCODE_CONFIG:-}" ]; then
+  OPENCODE_CONFIG="$PROJECT_DIR/config/opencode-providers.example.json"
+  export OPENCODE_CONFIG
 fi
 
 XDG_CONFIG_HOME="$PROJECT_DIR/.cache/opencode/config" \

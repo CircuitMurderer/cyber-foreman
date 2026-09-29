@@ -103,6 +103,47 @@ func TestPermissionRequestsAreDeclined(t *testing.T) {
 	}
 }
 
+func TestProviderKeyIsRemovedFromCodexChildEnvironment(t *testing.T) {
+	const keyName = "FOREMAN_TEST_CODEX_KEY"
+	t.Setenv(keyName, "parent-secret")
+	adapter, err := NewAdapter(Config{
+		Binary: os.Args[0],
+		Env:    []string{keyName + "=config-secret", "KEEP_CONFIG=yes"},
+		Provider: &ProviderConfig{
+			BaseURL: "http://127.0.0.1:9000", APIKeyEnv: keyName,
+			DefaultModel: "test-model", Protocol: ProtocolResponses,
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	environment := adapter.childEnv([]string{keyName + "=request-secret", "KEEP_REQUEST=yes"})
+	for _, entry := range environment {
+		if strings.HasPrefix(entry, keyName+"=") {
+			t.Fatalf("provider key leaked to child environment: %q", entry)
+		}
+	}
+	joined := strings.Join(environment, "\n")
+	if !strings.Contains(joined, "KEEP_CONFIG=yes") || !strings.Contains(joined, "KEEP_REQUEST=yes") {
+		t.Fatalf("unrelated environment was removed: %s", joined)
+	}
+}
+
+func TestProviderArgsDisableExternalControlPlaneTraffic(t *testing.T) {
+	arguments := strings.Join(providerArgs("http://127.0.0.1:1234/v1"), "\n")
+	for _, expected := range []string{
+		`model_provider="cyber_foreman"`,
+		`model_providers.cyber_foreman.base_url="http://127.0.0.1:1234/v1"`,
+		"analytics.enabled=false",
+		"features.remote_plugin=false",
+		"features.plugins=false",
+	} {
+		if !strings.Contains(arguments, expected) {
+			t.Fatalf("provider arguments missing %q: %s", expected, arguments)
+		}
+	}
+}
+
 func waitForText(t *testing.T, ctx context.Context, events <-chan domain.Event, want string) {
 	t.Helper()
 	for {
