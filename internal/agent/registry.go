@@ -9,8 +9,9 @@ import (
 )
 
 var (
-	ErrAdapterNotFound  = errors.New("adapter not found")
-	ErrAdapterDuplicate = errors.New("adapter already registered")
+	ErrAdapterNotFound    = errors.New("adapter not found")
+	ErrAdapterDuplicate   = errors.New("adapter already registered")
+	ErrAdapterUnavailable = errors.New("adapter unavailable")
 )
 
 // Registry exposes the adapters available to the control plane. Adapters own
@@ -60,13 +61,14 @@ func (r *Registry) Get(name string) (Adapter, error) {
 type Descriptor struct {
 	Name         string       `json:"name"`
 	Capabilities Capabilities `json:"capabilities"`
+	Status
 }
 
 func (r *Registry) List() []Descriptor {
 	r.mu.RLock()
 	result := make([]Descriptor, 0, len(r.adapters))
 	for name, adapter := range r.adapters {
-		result = append(result, Descriptor{Name: name, Capabilities: adapter.Capabilities()})
+		result = append(result, Descriptor{Name: name, Capabilities: adapter.Capabilities(), Status: StatusOf(adapter)})
 	}
 	r.mu.RUnlock()
 	sort.Slice(result, func(i, j int) bool { return result[i].Name < result[j].Name })

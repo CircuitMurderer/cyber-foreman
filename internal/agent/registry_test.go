@@ -16,7 +16,7 @@ func TestRegistryRejectsDuplicateNamesAndListsAdapters(t *testing.T) {
 		t.Fatal("duplicate adapter registration succeeded")
 	}
 	listed := registry.List()
-	if len(listed) != 1 || listed[0].Name != "process" {
+	if len(listed) != 1 || listed[0].Name != "process" || !listed[0].Installed || !listed[0].Healthy {
 		t.Fatalf("unexpected descriptors: %#v", listed)
 	}
 	if _, err := registry.Get("missing"); err == nil {

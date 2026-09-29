@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"net"
 	"testing"
 	"time"
@@ -97,5 +98,60 @@ func TestDisconnectFailsPendingCall(t *testing.T) {
 		}
 	case <-time.After(3 * time.Second):
 		t.Fatal("pending call did not fail after disconnect")
+	}
+}
+
+func TestVersionlessJSONRPC(t *testing.T) {
+	clientSide, serverSide := net.Pipe()
+	defer clientSide.Close()
+	defer serverSide.Close()
+
+	client := NewClientWithOptions(context.Background(), clientSide, clientSide, func(_ context.Context, method string, _ json.RawMessage) (any, *RPCError) {
+		if method != "approval" {
+			return nil, &RPCError{Code: -32601, Message: "unexpected method"}
+		}
+		return map[string]string{"decision": "decline"}, nil
+	}, ClientOptions{OmitJSONRPC: true, AcceptMissingJSONRPC: true})
+
+	serverDone := make(chan error, 1)
+	go func() {
+		reader := bufio.NewReader(serverSide)
+		line, err := reader.ReadBytes('\n')
+		if err != nil {
+			serverDone <- err
+			return
+		}
+		var request map[string]json.RawMessage
+		if err := json.Unmarshal(line, &request); err != nil {
+			serverDone <- err
+			return
+		}
+		if _, ok := request["jsonrpc"]; ok {
+			serverDone <- errors.New("versionless request contains jsonrpc")
+			return
+		}
+		encoder := json.NewEncoder(serverSide)
+		if err := encoder.Encode(map[string]any{"id": 99, "method": "approval", "params": map[string]any{}}); err != nil {
+			serverDone <- err
+			return
+		}
+		if _, err := reader.ReadBytes('\n'); err != nil {
+			serverDone <- err
+			return
+		}
+		serverDone <- encoder.Encode(map[string]any{"id": request["id"], "result": map[string]string{"ok": "yes"}})
+	}()
+
+	var result map[string]string
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	if err := client.Call(ctx, "initialize", map[string]any{}, &result); err != nil {
+		t.Fatal(err)
+	}
+	if result["ok"] != "yes" {
+		t.Fatalf("result = %#v", result)
+	}
+	if err := <-serverDone; err != nil {
+		t.Fatal(err)
 	}
 }

@@ -18,11 +18,12 @@ export function App() {
   const loadTasks = useCallback(async (silent = false) => {
     if (!silent) setLoading(true);
     try {
-      const next = await getTasks();
-      setTasks(next);
+      const [nextAdapters, nextTasks] = await Promise.all([getAdapters(), getTasks()]);
+      setAdapters(nextAdapters);
+      setTasks(nextTasks);
       setConnected(true);
       setError("");
-      setSelectedID((current) => current ?? next[0]?.id);
+      setSelectedID((current) => current ?? nextTasks[0]?.id);
     } catch (caught) {
       setConnected(false);
       if (!silent) setError(errorMessage(caught));

@@ -138,6 +138,32 @@ func TestAgentRequestIsInteractive(t *testing.T) {
 	}
 }
 
+func TestUnavailableAdapterIsListedButRejectsTasks(t *testing.T) {
+	registry, err := agent.NewRegistry(unavailableAPITestAdapter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	bus := event.NewBus()
+	service := app.NewServiceWithRegistry(context.Background(), registry, "unavailable", bus)
+	server := NewServer(service, bus).Handler()
+
+	listRequest := httptest.NewRequest(http.MethodGet, "/api/v1/adapters", nil)
+	listRecorder := httptest.NewRecorder()
+	server.ServeHTTP(listRecorder, listRequest)
+	if listRecorder.Code != http.StatusOK || !strings.Contains(listRecorder.Body.String(), `"installed":false`) || !strings.Contains(listRecorder.Body.String(), `"healthy":false`) {
+		t.Fatalf("unexpected adapter list: status=%d body=%s", listRecorder.Code, listRecorder.Body.String())
+	}
+
+	createRequest := httptest.NewRequest(http.MethodPost, "/api/v1/tasks", strings.NewReader(
+		`{"adapter":"unavailable","input":{"command":["ignored"]}}`,
+	))
+	createRecorder := httptest.NewRecorder()
+	server.ServeHTTP(createRecorder, createRequest)
+	if createRecorder.Code != http.StatusConflict || !strings.Contains(createRecorder.Body.String(), "adapter_unavailable") {
+		t.Fatalf("status=%d body=%s", createRecorder.Code, createRecorder.Body.String())
+	}
+}
+
 func newAPITestService(t *testing.T) (*app.Service, *event.Bus) {
 	t.Helper()
 	registry, err := agent.NewRegistry(apiTestAdapter{})
@@ -149,6 +175,13 @@ func newAPITestService(t *testing.T) (*app.Service, *event.Bus) {
 }
 
 type apiTestAdapter struct{}
+
+type unavailableAPITestAdapter struct{ apiTestAdapter }
+
+func (unavailableAPITestAdapter) Name() string { return "unavailable" }
+func (unavailableAPITestAdapter) Status() agent.Status {
+	return agent.Status{Installed: false, Healthy: false, Error: "command not found"}
+}
 
 func (apiTestAdapter) Name() string { return "test" }
 func (apiTestAdapter) Capabilities() agent.Capabilities {

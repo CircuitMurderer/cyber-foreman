@@ -1,0 +1,16 @@
+#!/usr/bin/env sh
+set -eu
+
+SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+PROJECT_DIR=$(CDPATH= cd -- "$SCRIPT_DIR/.." && pwd)
+GROK_BIN="$PROJECT_DIR/.tools/grok/grok"
+
+if [ ! -x "$GROK_BIN" ]; then
+  echo "local Grok CLI not found: $GROK_BIN" >&2
+  exit 1
+fi
+
+mkdir -p "$PROJECT_DIR/.cache/grok"
+
+GROK_HOME="$PROJECT_DIR/.cache/grok" \
+exec "$GROK_BIN" "$@"

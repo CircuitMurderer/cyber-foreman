@@ -32,11 +32,19 @@ type Notification struct {
 
 type RequestHandler func(context.Context, string, json.RawMessage) (any, *RPCError)
 
+// ClientOptions configures small JSON-RPC wire differences. ACP uses the
+// standard jsonrpc field, while Codex App Server deliberately omits it.
+type ClientOptions struct {
+	OmitJSONRPC          bool
+	AcceptMissingJSONRPC bool
+}
+
 type Client struct {
-	ctx    context.Context
-	reader io.Reader
-	writer io.Writer
-	handle RequestHandler
+	ctx     context.Context
+	reader  io.Reader
+	writer  io.Writer
+	handle  RequestHandler
+	options ClientOptions
 
 	nextID  atomic.Int64
 	write   sync.Mutex
@@ -65,8 +73,12 @@ type wireMessage struct {
 }
 
 func NewClient(ctx context.Context, reader io.Reader, writer io.Writer, handler RequestHandler) *Client {
+	return NewClientWithOptions(ctx, reader, writer, handler, ClientOptions{})
+}
+
+func NewClientWithOptions(ctx context.Context, reader io.Reader, writer io.Writer, handler RequestHandler, options ClientOptions) *Client {
 	client := &Client{
-		ctx: ctx, reader: reader, writer: writer, handle: handler,
+		ctx: ctx, reader: reader, writer: writer, handle: handler, options: options,
 		pending:       make(map[int64]chan response),
 		notifications: make(chan Notification, 512),
 		closed:        make(chan struct{}),
@@ -88,7 +100,7 @@ func (c *Client) Call(ctx context.Context, method string, params, result any) er
 	c.pending[id] = responseCh
 	c.mu.Unlock()
 
-	message := map[string]any{"jsonrpc": "2.0", "id": id, "method": method, "params": params}
+	message := c.message(map[string]any{"id": id, "method": method, "params": params})
 	if err := c.send(message); err != nil {
 		c.removePending(id)
 		c.fail(err)
@@ -122,7 +134,7 @@ func (c *Client) Notify(method string, params any) error {
 		return c.Err()
 	default:
 	}
-	return c.send(map[string]any{"jsonrpc": "2.0", "method": method, "params": params})
+	return c.send(c.message(map[string]any{"method": method, "params": params}))
 }
 
 func (c *Client) Notifications() <-chan Notification { return c.notifications }
@@ -171,7 +183,7 @@ func (c *Client) readLoop() {
 			c.fail(fmt.Errorf("decode ACP message: %w", err))
 			return
 		}
-		if message.JSONRPC != "2.0" {
+		if message.JSONRPC != "2.0" && !(message.JSONRPC == "" && c.options.AcceptMissingJSONRPC) {
 			c.fail(fmt.Errorf("unsupported JSON-RPC version %q", message.JSONRPC))
 			return
 		}
@@ -229,7 +241,7 @@ func (c *Client) handleRequest(message wireMessage) {
 	} else {
 		result, rpcErr = c.handle(c.ctx, message.Method, message.Params)
 	}
-	response := map[string]any{"jsonrpc": "2.0", "id": json.RawMessage(message.ID)}
+	response := c.message(map[string]any{"id": json.RawMessage(message.ID)})
 	if rpcErr != nil {
 		response["error"] = rpcErr
 	} else {
@@ -238,6 +250,13 @@ func (c *Client) handleRequest(message wireMessage) {
 	if err := c.send(response); err != nil {
 		c.fail(err)
 	}
+}
+
+func (c *Client) message(fields map[string]any) map[string]any {
+	if !c.options.OmitJSONRPC {
+		fields["jsonrpc"] = "2.0"
+	}
+	return fields
 }
 
 func (c *Client) fail(err error) {

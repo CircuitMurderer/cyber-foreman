@@ -1,6 +1,6 @@
 # 赛博监工
 
-一个面向编码 Agent 的本地控制平面。当前版本可以启动和观察子进程、维护任务状态、执行确定性监督与完成门禁，并通过 Web 控制台或 HTTP/SSE API 操作 OpenCode。
+一个面向编码 Agent 的本地控制平面。当前版本可以启动和观察子进程、维护任务状态、执行确定性监督与完成门禁，并通过 Web 控制台或 HTTP/SSE API 操作 OpenCode、Grok Build 和 Codex CLI。
 
 ## 当前包含
 
@@ -14,7 +14,9 @@
 - 对话记录弹窗与 Agent 流式 chunk 完整回复聚合
 - 同一 ACP session 的多轮继续对话、任务总结与历史删除
 - Go 1.26.8、Node.js 22.18 与 pnpm 用户级工具链
-- 项目内 OpenCode 1.18.31 与 ACP v1 Adapter
+- 通用 ACP v1 Adapter、启动健康探测与 OpenCode/Grok Build preset
+- Codex App Server Adapter，共享 Codex CLI/桌面版登录态
+- 项目内 OpenCode 1.18.31 测试工具
 
 ## 快速开始
 
@@ -106,6 +108,74 @@ GOOGLE_GENERATIVE_AI_API_KEY="..." go run ./cmd/foreman opencode \
 Adapter 与 Provider 解耦：Cyber Foreman 使用 ACP 控制 OpenCode，OpenCode 再使用其原生 Google Provider 调用 Gemini。未来接入 OpenAI 和 Anthropic 时不需要修改 ACP 协议层。
 当前 `foreman opencode` 默认模型是 `google/gemini-3.8-flash`，仍可通过 `--model` 覆盖。
 
+## 通用 ACP Agent
+
+`serve` 会注册 OpenCode、Grok Build 与 Codex CLI，并在启动时检查可执行文件、版本、登录状态和协议握手。未安装、未登录或协议不兼容的 Agent 不会阻止 Foreman 启动，但会在 `/api/v1/adapters` 和 Web 控制台中显示为不可用，也不能接收新任务：
+
+```bash
+./bin/foreman serve \
+  --opencode-bin /usr/local/bin/opencode \
+  --grok-bin /usr/local/bin/grok \
+  --codex-bin /usr/local/bin/codex
+```
+
+OpenCode 使用 `opencode acp`；Grok Build 使用 `grok --no-auto-update agent stdio`。命令可以是绝对/相对路径，也可以是 PATH 中的名称。
+仓库中存在可执行的 `scripts/opencode` 或 `scripts/grok` 时，`serve` 会优先使用对应的项目本地包装脚本；否则回退到 PATH。
+
+### Grok Build + Gemini
+
+项目本地 Grok 二进制放在 `.tools/grok/grok`，运行状态与用户配置隔离在 `.cache/grok`。复制无密钥模板并在启动 Foreman 前注入环境变量：
+
+```bash
+mkdir -p .cache/grok
+cp config/grok-gemini.example.toml .cache/grok/config.toml
+source .api_key
+export HTTPS_PROXY=http://127.0.0.1:7897
+export HTTP_PROXY=http://127.0.0.1:7897
+./scripts/go run ./cmd/foreman serve \
+  --agents-file config/agents.gemini.example.json
+```
+
+模板使用 Google 官方 OpenAI-compatible 端点和 `gemini-3.8-flash`，API key 只从 `GOOGLE_GENERATIVE_AI_API_KEY` 读取，不会写入 TOML。`agents.gemini.example.json` 不声明 ACP `auth_methods`，因此由 Grok 的自定义 model/provider 环境完成认证；使用 xAI 登录或 `XAI_API_KEY` 时可改用默认 Grok preset，或在自定义 profile 中声明 `xai.api_key`、`cached_token`。
+
+可先独立确认 Grok 与 Gemini 的链路：
+
+```bash
+source .api_key
+HTTPS_PROXY=http://127.0.0.1:7897 \
+HTTP_PROXY=http://127.0.0.1:7897 \
+./scripts/grok --no-auto-update --model gemini-flash \
+  --permission-mode dontAsk --single "只回复 OK"
+```
+
+内网存在其他 ACP v1 Agent，或者安装路径需要统一管理时，可以复制 `config/agents.example.json` 并使用：
+
+```bash
+./bin/foreman serve --agents-file /etc/cyber-foreman/agents.json
+```
+
+profile 支持 `name`、`command`、`args`、`version_args`、`auth_methods` 和 `auth_optional`。`auth_optional=true` 会先尝试列出的 ACP 登录方法，全部失败时再让 Agent 使用自定义 provider 的环境凭据；默认 Grok preset 已开启该行为。配置文件不接受明文密钥；Agent 继承启动 Foreman 时的环境变量和本机登录状态。指定 `--agents-file` 后使用文件内的 Agent 列表，不再加载命令行的 OpenCode/Grok preset。
+
+查看探测结果：
+
+```bash
+curl http://127.0.0.1:8090/api/v1/adapters
+```
+
+响应会包含 `installed`、`healthy`、解析后的 `command`、`version`、`protocol_version`、`agent_info` 和失败原因。健康探测只执行版本/登录检查和协议 `initialize`，不会创建 session、发送 Prompt 或产生模型费用。
+
+### Codex CLI
+
+Codex 不使用 ACP；Foreman 通过官方 `codex app-server` 的 JSONL 协议接入，并把 Codex 的流式消息、思考摘要、工具活动和审批请求转换为统一事件。启动时会执行 `codex login status`，但不会读取或保存 token。Codex CLI 与桌面版共用本机登录缓存，因此已登录桌面版的机器通常无需再次认证；也可先手动确认：
+
+```bash
+codex --version
+codex login status
+./bin/foreman serve --codex-bin codex
+```
+
+每个 Foreman 任务启动一个临时 Codex thread，工作区采用 `workspace-write`，审批策略为 `never`；同一任务的“继续”会复用该 thread，打断则调用 `turn/interrupt`。若内网机器已预装并登录 Codex CLI，只需让 `codex` 位于 PATH，或显式传入 `--codex-bin`。
+
 ## 确定性验证
 
 Rule-based Supervisor 当前已经提供：
@@ -121,7 +191,7 @@ Rule-based Supervisor 当前已经提供：
 
 ## REST 控制面 v1
 
-`foreman serve` 同时注册 `process` 和 `opencode` Adapter。创建任务使用独立的 v1 DTO，任务会先以 `queued` 状态返回，再异步启动 Adapter：
+`foreman serve` 同时注册 `process`、`opencode`、`grok` 和 `codex` Adapter。创建任务使用独立的 v1 DTO，任务会先以 `queued` 状态返回，再异步启动 Adapter：
 
 ```bash
 curl -X POST http://127.0.0.1:8090/api/v1/tasks \
@@ -196,8 +266,10 @@ Web 任务详情同时提供“任务总结”和“对话与回复”：前者�
 cmd/foreman/             CLI 与 HTTP 服务入口
 internal/agent/          Agent 适配协议
 internal/agent/process/  通用子进程适配器
-internal/agent/opencode/ OpenCode ACP 适配器
-internal/acp/            ACP v1 JSON-RPC 客户端
+internal/agent/acpagent/ 通用 ACP Adapter、profile 和健康探测
+internal/agent/opencode/ OpenCode 兼容包装层
+internal/agent/codex/    Codex App Server Adapter
+internal/acp/            ACP/Codex 共用 JSON-RPC JSONL 客户端
 internal/app/            任务编排应用层
 internal/domain/         任务和事件类型
 internal/event/          实时事件总线
@@ -211,7 +283,7 @@ web/                     React/HeroUI 控制台
 ## 下一步
 
 1. 完成 SPEC-003 剩余能力：断联重试、测试失败自动修复和模拟 ACP 全闭环测试。
-2. 接入 OpenAI、Anthropic 和 Google 三类命名 Provider 配置。
+2. 增加 worktree 隔离、任务 diff 和代码审查反馈闭环。
 3. 接入内网本地模型，作为低于确定性规则优先级的建议决策器。
 4. 在对外监听前加入认证、工作目录白名单和命令权限策略。
 

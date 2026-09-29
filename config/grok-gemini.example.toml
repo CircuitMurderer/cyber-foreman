@@ -1,0 +1,14 @@
+# Copy this file to .cache/grok/config.toml. The API key stays in the
+# environment and is never persisted in this file.
+
+[models]
+default = "gemini-flash"
+
+[model.gemini-flash]
+name = "Gemini 3.8 Flash"
+model = "gemini-3.8-flash"
+base_url = "https://generativelanguage.googleapis.com/v1beta/openai/"
+env_key = "GOOGLE_GENERATIVE_AI_API_KEY"
+api_backend = "chat_completions"
+context_window = 1048576
+max_completion_tokens = 65536

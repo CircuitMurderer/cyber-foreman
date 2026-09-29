@@ -15,6 +15,8 @@ import (
 	"time"
 
 	"cyber-foreman/internal/agent"
+	"cyber-foreman/internal/agent/acpagent"
+	codexadapter "cyber-foreman/internal/agent/codex"
 	opencodeadapter "cyber-foreman/internal/agent/opencode"
 	processadapter "cyber-foreman/internal/agent/process"
 	"cyber-foreman/internal/api"
@@ -135,7 +137,10 @@ func runOpenCode(parent context.Context, args []string) error {
 func serve(ctx context.Context, args []string) error {
 	flags := flag.NewFlagSet("serve", flag.ContinueOnError)
 	addr := flags.String("addr", "127.0.0.1:8090", "HTTP listen address")
-	opencodeBinary := flags.String("opencode-bin", "scripts/opencode", "project-local OpenCode executable or wrapper")
+	opencodeBinary := flags.String("opencode-bin", defaultOpenCodeCommand(), "OpenCode executable or command on PATH")
+	grokBinary := flags.String("grok-bin", defaultGrokCommand(), "Grok Build executable or command on PATH")
+	codexBinary := flags.String("codex-bin", "codex", "Codex CLI executable or command on PATH")
+	agentsFile := flags.String("agents-file", "", "JSON file containing custom ACP agent profiles")
 	webDir := flags.String("web-dir", "web/dist", "Vite production build directory; empty disables the web console")
 	databasePath := flags.String("db", "data/foreman.db", "SQLite database path")
 	if err := flags.Parse(args); err != nil {
@@ -148,11 +153,39 @@ func serve(ctx context.Context, args []string) error {
 	}
 	defer store.Close()
 	bus := event.NewBusWithJournal(store)
-	opencode, err := opencodeadapter.NewAdapter(opencodeadapter.Config{Binary: *opencodeBinary})
-	if err != nil {
-		return fmt.Errorf("configure OpenCode adapter: %w", err)
+	profiles := []acpagent.Profile{
+		acpagent.OpenCodeProfile(*opencodeBinary),
+		acpagent.GrokProfile(*grokBinary),
 	}
-	adapters, err := agent.NewRegistry(processadapter.NewAdapter(), opencode)
+	if *agentsFile != "" {
+		profiles, err = acpagent.LoadProfiles(*agentsFile)
+		if err != nil {
+			return err
+		}
+	}
+	configuredAdapters := make([]agent.Adapter, 0, len(profiles)+2)
+	configuredAdapters = append(configuredAdapters, processadapter.NewAdapter())
+	for _, profile := range profiles {
+		adapter, adapterErr := acpagent.NewAdapter(acpagent.Config{Profile: profile})
+		if adapterErr != nil {
+			return fmt.Errorf("configure ACP adapter %q: %w", profile.Name, adapterErr)
+		}
+		status := adapter.Probe(ctx)
+		if !status.Healthy {
+			fmt.Fprintf(os.Stderr, "warning: ACP adapter %s unavailable: %s\n", profile.Name, status.Error)
+		}
+		configuredAdapters = append(configuredAdapters, adapter)
+	}
+	codexAdapter, err := codexadapter.NewAdapter(codexadapter.Config{Binary: *codexBinary})
+	if err != nil {
+		return fmt.Errorf("configure Codex adapter: %w", err)
+	}
+	codexStatus := codexAdapter.Probe(ctx)
+	if !codexStatus.Healthy {
+		fmt.Fprintf(os.Stderr, "warning: Codex adapter unavailable: %s\n", codexStatus.Error)
+	}
+	configuredAdapters = append(configuredAdapters, codexAdapter)
+	adapters, err := agent.NewRegistry(configuredAdapters...)
 	if err != nil {
 		return fmt.Errorf("configure adapter registry: %w", err)
 	}
@@ -190,6 +223,22 @@ func serve(ctx context.Context, args []string) error {
 	}
 	<-shutdownDone
 	return nil
+}
+
+func defaultOpenCodeCommand() string {
+	const projectWrapper = "scripts/opencode"
+	if info, err := os.Stat(projectWrapper); err == nil && !info.IsDir() && info.Mode()&0o111 != 0 {
+		return projectWrapper
+	}
+	return "opencode"
+}
+
+func defaultGrokCommand() string {
+	const projectWrapper = "scripts/grok"
+	if info, err := os.Stat(projectWrapper); err == nil && !info.IsDir() && info.Mode()&0o111 != 0 {
+		return projectWrapper
+	}
+	return "grok"
 }
 
 func runCommand(parent context.Context, args []string) error {
@@ -253,7 +302,7 @@ func printUsage() {
 	fmt.Print(`赛博监工 (cyber-foreman)
 
 Usage:
-  foreman serve [--addr 127.0.0.1:8090] [--opencode-bin scripts/opencode] [--web-dir web/dist] [--db data/foreman.db]
+  foreman serve [--addr 127.0.0.1:8090] [--opencode-bin PATH] [--grok-bin PATH] [--codex-bin PATH] [--agents-file agents.json] [--web-dir web/dist] [--db data/foreman.db]
   foreman run [--timeout 10m] [--cwd PATH] -- COMMAND [ARG...]
   foreman opencode [--model google/MODEL] [--idle-timeout 90s] [--timeout 10m] [--interrupt-with TEXT] --prompt TEXT
 `)

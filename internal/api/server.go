@@ -312,6 +312,8 @@ func classifyError(err error) (int, string) {
 		return http.StatusNotFound, "task_not_found"
 	case errors.Is(err, agent.ErrAdapterNotFound):
 		return http.StatusBadRequest, "adapter_not_found"
+	case errors.Is(err, agent.ErrAdapterUnavailable):
+		return http.StatusConflict, "adapter_unavailable"
 	case errors.Is(err, app.ErrTaskNotRunning), errors.Is(err, app.ErrActionUnavailable), errors.Is(err, app.ErrInvalidTransition), errors.Is(err, app.ErrTaskNotDeletable):
 		return http.StatusConflict, "action_conflict"
 	default:

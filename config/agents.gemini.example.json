@@ -1,0 +1,16 @@
+{
+  "agents": [
+    {
+      "name": "opencode",
+      "command": "scripts/opencode",
+      "args": ["acp"],
+      "version_args": ["--version"]
+    },
+    {
+      "name": "grok",
+      "command": "scripts/grok",
+      "args": ["--no-auto-update", "agent", "stdio"],
+      "version_args": ["version"]
+    }
+  ]
+}

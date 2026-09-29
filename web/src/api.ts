@@ -26,6 +26,13 @@ export interface AdapterCapabilities {
 export interface AdapterDescriptor {
   name: string;
   capabilities: AdapterCapabilities;
+  installed: boolean;
+  healthy: boolean;
+  command?: string;
+  version?: string;
+  protocol_version?: number;
+  agent_info?: {name?: string; title?: string; version?: string};
+  error?: string;
 }
 
 export interface TaskLinks {

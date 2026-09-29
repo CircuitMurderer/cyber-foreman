@@ -1,0 +1,18 @@
+{
+  "agents": [
+    {
+      "name": "opencode",
+      "command": "/usr/local/bin/opencode",
+      "args": ["acp"],
+      "version_args": ["--version"]
+    },
+    {
+      "name": "grok",
+      "command": "/usr/local/bin/grok",
+      "args": ["--no-auto-update", "agent", "stdio"],
+      "version_args": ["version"],
+      "auth_methods": ["xai.api_key", "cached_token"],
+      "auth_optional": true
+    }
+  ]
+}

@@ -167,6 +167,11 @@ button { -webkit-tap-highlight-color: transparent; }
 .field-label { gap: 6px; min-height: 16px; color: var(--text); font-size: 11px; font-weight: 650; letter-spacing: .01em; }
 .field-label svg { color: var(--muted); }
 .field-label small { color: var(--subtle); font-weight: 400; margin-left: auto; font-size: 9px; }
+.adapter-health { display: block; margin-top: 7px; color: var(--subtle); font-size: 10px; line-height: 1.4; overflow-wrap: anywhere; }
+.adapter-health.healthy { color: var(--success); }
+.adapter-health.unhealthy { color: var(--danger); }
+.unavailable-adapters { display: grid; gap: 4px; margin-top: 7px; color: var(--danger); font-size: 9px; line-height: 1.4; }
+.unavailable-adapters span { overflow-wrap: anywhere; }
 .control {
   width: 100%; min-height: 38px; border: 1px solid var(--line); outline: none;
   border-radius: 9px; background: var(--input); color: var(--text-strong); padding: 8px 10px;

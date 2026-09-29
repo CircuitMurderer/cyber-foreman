@@ -21,7 +21,7 @@ export function TaskComposer({adapters, onCreated}: TaskComposerProps) {
   const [workspace, setWorkspace] = useState("");
   const [prompt, setPrompt] = useState("");
   const [command, setCommand] = useState("");
-  const [model, setModel] = useState("google/gemini-3.8-flash");
+  const [model, setModel] = useState("");
   const [idleTimeout, setIdleTimeout] = useState("90s");
   const [hardTimeout, setHardTimeout] = useState("30m");
   const [maxNudges, setMaxNudges] = useState(2);
@@ -39,12 +39,21 @@ export function TaskComposer({adapters, onCreated}: TaskComposerProps) {
     [adapter, adapters]
   );
 
+  const availableAdapters = useMemo(
+    () => adapters.filter((item) => item.installed && item.healthy),
+    [adapters]
+  );
+
   useEffect(() => {
-    if (adapter || adapters.length === 0) return;
-    const preferred = adapters.find((item) => item.name === "opencode") ?? adapters[0];
+    if (availableAdapters.length === 0) {
+      setAdapter("");
+      return;
+    }
+    if (availableAdapters.some((item) => item.name === adapter)) return;
+    const preferred = availableAdapters.find((item) => item.name === "opencode") ?? availableAdapters[0];
     setAdapter(preferred.name);
     setKind(preferred.capabilities.prompt ? "agent" : "command");
-  }, [adapter, adapters]);
+  }, [adapter, availableAdapters]);
 
   useEffect(() => {
     if (!selectedAdapter) return;
@@ -55,6 +64,10 @@ export function TaskComposer({adapters, onCreated}: TaskComposerProps) {
   useEffect(() => {
     setVerifyWorkspace(kind === "agent");
   }, [kind]);
+
+  useEffect(() => {
+    setModel("");
+  }, [adapter]);
 
   async function submit(event: FormEvent) {
     event.preventDefault();
@@ -70,7 +83,7 @@ export function TaskComposer({adapters, onCreated}: TaskComposerProps) {
         input,
         ...(kind === "agent"
           ? {
-              model: model.trim(),
+              ...(model.trim() ? {model: model.trim()} : {}),
               supervision: {
                 idle_timeout: idleTimeout,
                 hard_timeout: hardTimeout,
@@ -116,8 +129,28 @@ export function TaskComposer({adapters, onCreated}: TaskComposerProps) {
                 onChange={(event) => setAdapter(event.target.value)}
                 disabled={submitting}
               >
-                {adapters.map((item) => <option key={item.name} value={item.name}>{item.name}</option>)}
+                {adapters.map((item) => (
+                  <option key={item.name} value={item.name} disabled={!item.installed || !item.healthy}>
+                    {adapterLabel(item)}
+                  </option>
+                ))}
               </select>
+              {selectedAdapter && (
+                <span className={`adapter-health ${selectedAdapter.healthy ? "healthy" : "unhealthy"}`}>
+                  {selectedAdapter.healthy
+                    ? selectedAdapter.capabilities.prompt
+                      ? `ACP v${selectedAdapter.protocol_version ?? "?"}${selectedAdapter.version ? ` · ${selectedAdapter.version}` : ""}`
+                      : "本地命令执行器"
+                    : selectedAdapter.error || "Agent 不可用"}
+                </span>
+              )}
+              {adapters.some((item) => !item.installed || !item.healthy) && (
+                <div className="unavailable-adapters">
+                  {adapters.filter((item) => !item.installed || !item.healthy).map((item) => (
+                    <span key={item.name}><strong>{item.name}</strong>：{item.error || "ACP 健康检查失败"}</span>
+                  ))}
+                </div>
+              )}
             </Field>
             <Field label="工作区" icon={<FolderGit2 size={15} />} hint="留空使用后端当前目录">
               <input
@@ -154,7 +187,7 @@ export function TaskComposer({adapters, onCreated}: TaskComposerProps) {
                 />
               </Field>
               <Field label="模型">
-                <input className="control" value={model} onChange={(event) => setModel(event.target.value)} disabled={submitting} />
+                <input className="control" value={model} onChange={(event) => setModel(event.target.value)} placeholder="留空使用 Agent 默认模型" disabled={submitting} />
               </Field>
             </>
           ) : (
@@ -200,13 +233,20 @@ export function TaskComposer({adapters, onCreated}: TaskComposerProps) {
           )}
 
           {error && <div className="inline-error" role="alert">{error}</div>}
-          <Button className="dispatch-button" variant="primary" type="submit" fullWidth isDisabled={submitting || !adapter}>
+          <Button className="dispatch-button" variant="primary" type="submit" fullWidth isDisabled={submitting || !adapter || !selectedAdapter?.healthy}>
             {submitting ? "正在派发…" : <><Plus size={17} /> 派发任务</>}
           </Button>
         </form>
       </Card.Content>
     </Card>
   );
+}
+
+function adapterLabel(adapter: AdapterDescriptor): string {
+  const title = adapter.agent_info?.title || adapter.agent_info?.name || adapter.name;
+  if (!adapter.installed) return `${title}（未安装）`;
+  if (!adapter.healthy) return `${title}（不可用）`;
+  return adapter.version ? `${title} · ${adapter.version}` : title;
 }
 
 function Field({label, icon, hint, children}: {label: string; icon?: React.ReactNode; hint?: string; children: React.ReactNode}) {

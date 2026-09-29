@@ -192,6 +192,14 @@ func (s *Service) queueTask(req StartTaskRequest) (domain.Task, agent.Adapter, e
 	if err != nil {
 		return domain.Task{}, nil, err
 	}
+	status := agent.StatusOf(adapter)
+	if !status.Installed || !status.Healthy {
+		reason := status.Error
+		if reason == "" {
+			reason = "health check did not succeed"
+		}
+		return domain.Task{}, nil, fmt.Errorf("%w: %s: %s", agent.ErrAdapterUnavailable, adapterName, reason)
+	}
 	if req.Prompt != "" && !adapter.Capabilities().Prompt {
 		return domain.Task{}, nil, errors.New("selected adapter does not support prompt tasks")
 	}
