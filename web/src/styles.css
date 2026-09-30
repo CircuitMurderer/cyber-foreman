@@ -270,7 +270,7 @@ select.control { appearance: auto; }
 .metric-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 9px; margin: 15px 0; }
 .metric {
   width: 100%; display: grid; grid-template-columns: 32px 1fr; grid-template-rows: auto auto; align-items: center;
-  padding: 11px; border: 1px solid var(--line); border-radius: 11px; color: inherit; background: var(--panel);
+  height: auto; min-height: 64px; overflow: hidden; padding: 11px; border: 1px solid var(--line); border-radius: 11px; color: inherit; background: var(--panel);
   text-align: left; cursor: pointer; transition: border-color .15s ease, background .15s ease, transform .15s ease, box-shadow .15s ease;
 }
 .metric:hover { border-color: var(--accent-border); background: color-mix(in srgb, var(--panel) 92%, var(--accent)); transform: translateY(-1px); box-shadow: 0 5px 15px rgba(31, 41, 55, .06); }
