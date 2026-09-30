@@ -1,6 +1,6 @@
 # SPEC-003：确定性监督闭环
 
-- 状态：IMPLEMENTING
+- 状态：ACCEPTED
 - 负责人：Cyber Foreman
 - 创建日期：2026-09-18
 - 最后更新：2026-09-30
@@ -208,6 +208,7 @@ Clock.Now() time.Time
 - 模拟 Adapter 验证测试持续失败时严格停在 `MaxTestRepairs`，随后进入 `attention_required`，不存在无限修复循环。
 - 模拟 Adapter 验证活动 turn 断联后会进入 `recovering`、重建 session、恢复模型选择并重放受信任指令；旧 Agent 输出不会进入恢复 Prompt。
 - 模拟 Adapter 验证 `waiting_input` 期间断联会先恢复空闲 session，并把上下文延迟到下一条操作员指令；连续断联在 `MaxRetries` 后进入 `attention_required`。
+- 模拟 ACP 子进程通过真实 stdin/stdout JSON-RPC/JSONL 验证完整闭环：首轮输出后 cancel/follow-up，追加轮 transport 断联，新进程握手并重建 session，失败验证触发 repair，第二轮验证通过后完成任务；该测试连续运行 20 次及 race 模式 3 次通过。
 - 进程任务验证表明 workspace 安全检查失败后不会继续执行仓库内测试命令。
 - 真实 OpenCode 1.18.31 + DeepSeek Flash 验证首轮故意写入错误内容，外部测试失败后 Foreman 生成 `test-failed → repair`，同 session 修复并在第二次验证通过后进入 `waiting_input`。
 - 真实 OpenCode 1.18.31 + Gemini 3.8 Flash 验证 operator interrupt 经由 Service 完成 cancel/follow-up，保留上下文并通过 workspace verifier。

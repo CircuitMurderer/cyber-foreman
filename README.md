@@ -252,6 +252,7 @@ Rule-based Supervisor 当前已经提供：
 - workspace 安全门禁优先于测试命令，越界后不会执行可能已被篡改的测试
 - 测试失败后在预算内向同一 Agent 追加脱敏修复指令并自动重新验证
 - Agent 断联后按 `max_retries` 重建 session，恢复模型配置，并重放有界的受信任指令上下文
+- 真实 ACP 子进程故障测试覆盖 cancel/follow-up、transport 断联、session 重建、测试修复与最终验证
 - 修复预算耗尽或工作区验证失败后的 `attention_required` 状态
 - OpenCode 单任务 mailbox、自动 idle 纠偏和 hard timeout
 - Agent turn 结束后的 `verifying → completed/attention_required` 完成门禁
@@ -358,9 +359,8 @@ web/                     React/HeroUI 控制台
 
 ## 下一步
 
-1. 完成 SPEC-003 剩余能力：模拟 ACP 全闭环故障测试。
-2. 增加 worktree 隔离、任务 diff 和代码审查反馈闭环。
+1. 增加 worktree 隔离、任务 diff 和代码审查反馈闭环。
+2. 增加 Provider Profile、认证、工作目录白名单和命令权限策略。
 3. 接入内网本地模型，作为低于确定性规则优先级的建议决策器。
-4. 在对外监听前加入认证、工作目录白名单和命令权限策略。
 
 > 当前 HTTP API 可以启动任意本地命令，因此默认只监听 `127.0.0.1`，不要直接暴露到局域网。

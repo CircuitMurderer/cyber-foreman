@@ -11,7 +11,7 @@
 - [x] T-009 [REQ-023, REQ-024] 实现 verifying 聚合与完成门禁
 - [x] T-010 [AC-003, AC-009] 增加重复事件、并发输入和预算耗尽故障测试
 - [x] T-011 [AC-004..007] 使用临时命令和临时 Git 仓库验证 test/git 规则
-- [ ] T-012 [AC-008] 使用模拟 ACP Agent 验证完整监督闭环
+- [x] T-012 [AC-008] 使用模拟 ACP Agent 验证完整监督闭环
 - [x] T-013 [AC-010] 执行 fmt、vet、全量测试和竞态测试并记录验收证据
-- [ ] T-014 更新 README 与验证矩阵，将规格推进到 ACCEPTED
+- [x] T-014 更新 README 与验证矩阵，将规格推进到 ACCEPTED
 - [x] T-015 将 `retry_session` 接入应用层：断联后重建 session、重放固定上下文并受 retry 预算约束
