@@ -69,6 +69,30 @@ func TestServiceWorkspaceGateRejectsSensitiveChange(t *testing.T) {
 	}
 }
 
+func TestServiceDoesNotRunTestsAfterWorkspaceSafetyFailure(t *testing.T) {
+	repo := appTestRepository(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	service := NewService(ctx, processadapter.NewAdapter(), event.NewBus())
+	task, err := service.StartTask(StartTaskRequest{
+		Command: helperProcessCommand(t, "write-sensitive"), CWD: repo,
+		Verification: VerificationRequest{
+			Workspace: true,
+			Commands:  []verification.Command{{Argv: helperProcessCommand(t, "write-marker"), Timeout: 2 * time.Second}},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	final := waitForTerminalTask(t, service, task.ID)
+	if final.Status != domain.TaskAttention {
+		t.Fatalf("status = %q, want attention_required", final.Status)
+	}
+	if _, err := os.Stat(filepath.Join(repo, "verification-ran")); !os.IsNotExist(err) {
+		t.Fatalf("verification command ran after workspace safety failure: %v", err)
+	}
+}
+
 func TestServiceHelperProcess(t *testing.T) {
 	if len(os.Args) < 2 || os.Args[len(os.Args)-2] != "--" {
 		return
@@ -81,6 +105,11 @@ func TestServiceHelperProcess(t *testing.T) {
 	case "write-sensitive":
 		if err := os.WriteFile(".api_key", []byte("test-secret"), 0o600); err != nil {
 			os.Exit(8)
+		}
+		os.Exit(0)
+	case "write-marker":
+		if err := os.WriteFile("verification-ran", []byte("unexpected"), 0o600); err != nil {
+			os.Exit(10)
 		}
 		os.Exit(0)
 	default:

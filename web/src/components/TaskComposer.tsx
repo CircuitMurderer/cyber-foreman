@@ -26,6 +26,7 @@ export function TaskComposer({adapters, onCreated}: TaskComposerProps) {
   const [hardTimeout, setHardTimeout] = useState("30m");
   const [maxNudges, setMaxNudges] = useState(2);
   const [maxRetries, setMaxRetries] = useState(2);
+  const [maxTestRepairs, setMaxTestRepairs] = useState(2);
   const [verifyWorkspace, setVerifyWorkspace] = useState(true);
   const [runTests, setRunTests] = useState(false);
   const [testCommand, setTestCommand] = useState("./scripts/test");
@@ -88,7 +89,8 @@ export function TaskComposer({adapters, onCreated}: TaskComposerProps) {
                 idle_timeout: idleTimeout,
                 hard_timeout: hardTimeout,
                 max_nudges: maxNudges,
-                max_retries: maxRetries
+                max_retries: maxRetries,
+                max_test_repairs: maxTestRepairs
               }
             }
           : {}),
@@ -229,6 +231,7 @@ export function TaskComposer({adapters, onCreated}: TaskComposerProps) {
               <Field label="硬超时"><input className="control mono" value={hardTimeout} onChange={(event) => setHardTimeout(event.target.value)} /></Field>
               <Field label="最大提醒"><input className="control" type="number" min={0} value={maxNudges} onChange={(event) => setMaxNudges(Number(event.target.value))} /></Field>
               <Field label="最大恢复"><input className="control" type="number" min={0} value={maxRetries} onChange={(event) => setMaxRetries(Number(event.target.value))} /></Field>
+              <Field label="最大测试修复"><input className="control" type="number" min={0} value={maxTestRepairs} onChange={(event) => setMaxTestRepairs(Number(event.target.value))} /></Field>
             </div>
           )}
 

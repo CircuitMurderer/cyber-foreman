@@ -61,6 +61,8 @@ type Service struct {
 type taskRuntime struct {
 	adapter       agent.Adapter
 	sessionID     string
+	startRequest  agent.StartRequest
+	model         string
 	cancel        context.CancelFunc
 	actions       chan taskAction
 	verification  VerificationRequest
@@ -302,7 +304,9 @@ func (s *Service) startQueuedTask(taskID string, req StartTaskRequest, adapter a
 	}
 	s.mu.Lock()
 	s.runtimes[t.ID] = taskRuntime{
-		adapter: adapter, sessionID: session.ID, cancel: cancel, actions: make(chan taskAction, 1),
+		adapter: adapter, sessionID: session.ID,
+		startRequest: agent.StartRequest{TaskID: t.ID, Command: append([]string(nil), t.Command...), CWD: t.CWD},
+		model:        req.Model, cancel: cancel, actions: make(chan taskAction, 1),
 		verification: cloneVerificationRequest(req.Verification), baseline: baseline,
 		prompt: req.Prompt, interruptWith: req.InterruptWith, interactive: req.Interactive, policy: policy,
 	}
@@ -358,14 +362,17 @@ func (s *Service) AvailableActions(id string) []string {
 		return nil
 	}
 	runtime, hasRuntime := s.runtimes[id]
-	actions := make([]string, 0, 3)
+	actions := make([]string, 0, 5)
 	if hasRuntime && t.Kind == domain.TaskKindAgent && t.Status == domain.TaskRunning && runtime.adapter.Capabilities().CancelTurn {
 		actions = append(actions, "interrupt")
 	}
 	if hasRuntime && runtime.interactive && (t.Status == domain.TaskWaiting || t.Status == domain.TaskAttention) {
 		actions = append(actions, "continue")
 	}
-	if !t.Status.Terminal() || hasRuntime {
+	if hasRuntime && runtime.interactive && t.Status == domain.TaskWaiting {
+		actions = append(actions, "finish")
+	}
+	if !t.Status.Terminal() || (hasRuntime && t.Status == domain.TaskAttention) {
 		actions = append(actions, "cancel")
 	}
 	if t.Status.Terminal() || t.Status == domain.TaskWaiting {
@@ -400,6 +407,34 @@ func (s *Service) StopTask(id string) error {
 		return nil
 	}
 	return s.transition(id, domain.TaskStopped, "stopped by operator")
+}
+
+// FinishTask marks a verified interactive task complete and closes its idle
+// Agent session. It is intentionally limited to waiting_input so an operator
+// cannot bypass a failed verification or terminate an active turn as success.
+func (s *Service) FinishTask(id string) error {
+	s.mu.RLock()
+	runtime, ok := s.runtimes[id]
+	t := s.tasks[id]
+	var current domain.Task
+	if t != nil {
+		current = cloneTask(t)
+	}
+	s.mu.RUnlock()
+	if t == nil {
+		return ErrTaskNotFound
+	}
+	if !ok || current.Kind != domain.TaskKindAgent || !runtime.interactive || current.Status != domain.TaskWaiting {
+		return ErrActionUnavailable
+	}
+	if err := s.transition(id, domain.TaskCompleted, "operator finished the interactive task"); err != nil {
+		return err
+	}
+	runtime.cancel()
+	stopCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	_ = runtime.adapter.Stop(stopCtx, runtime.sessionID)
+	return nil
 }
 
 // InterruptTask cancels the active agent turn and schedules a same-session
@@ -536,22 +571,18 @@ func (s *Service) consume(ctx context.Context, taskID string, events <-chan doma
 	s.mu.Unlock()
 }
 
-func (s *Service) runVerification(ctx context.Context, taskID string, runtime taskRuntime) {
-	required := false
-	passed := true
-	if len(runtime.verification.Commands) > 0 {
-		required = true
-		s.bus.Publish(domain.Event{TaskID: taskID, Type: domain.EventVerificationStart, Timestamp: time.Now().UTC(),
-			Data: map[string]string{"verifier": "test"}})
-		result := (verification.CommandVerifier{}).Run(ctx, s.taskCWD(taskID), runtime.verification.Commands)
-		s.bus.Publish(domain.Event{TaskID: taskID, Type: domain.EventVerificationFinish, Timestamp: time.Now().UTC(),
-			Data: map[string]any{"verifier": "test", "passed": result.Passed, "result": result}})
-		if !result.Passed {
-			passed = false
-		}
-	}
+type verificationReport struct {
+	Required       bool
+	Passed         bool
+	Test           *verification.TestResult
+	Workspace      *verification.WorkspaceResult
+	WorkspaceError string
+}
+
+func (s *Service) executeVerification(ctx context.Context, taskID string, runtime taskRuntime) verificationReport {
+	report := verificationReport{Passed: true}
 	if runtime.verification.Workspace {
-		required = true
+		report.Required = true
 		s.bus.Publish(domain.Event{TaskID: taskID, Type: domain.EventVerificationStart, Timestamp: time.Now().UTC(),
 			Data: map[string]string{"verifier": "workspace"}})
 		var result verification.WorkspaceResult
@@ -561,16 +592,43 @@ func (s *Service) runVerification(ctx context.Context, taskID string, runtime ta
 		} else {
 			result, err = (verification.WorkspaceVerifier{}).Verify(ctx, *runtime.baseline, runtime.verification.WorkspacePolicy)
 		}
+		report.Workspace = &result
 		data := map[string]any{"verifier": "workspace", "passed": err == nil && result.Passed, "result": result}
 		if err != nil {
-			data["error"] = err.Error()
+			report.WorkspaceError = err.Error()
+			data["error"] = report.WorkspaceError
 		}
 		s.bus.Publish(domain.Event{TaskID: taskID, Type: domain.EventVerificationFinish, Timestamp: time.Now().UTC(), Data: data})
 		if err != nil || !result.Passed {
-			passed = false
+			report.Passed = false
 		}
 	}
-	if !required {
+	// Workspace policy is the safety gate. Never execute repository-controlled
+	// verification commands after it reports an unsafe or invalid workspace.
+	if report.Passed && len(runtime.verification.Commands) > 0 {
+		report.Required = true
+		s.bus.Publish(domain.Event{TaskID: taskID, Type: domain.EventVerificationStart, Timestamp: time.Now().UTC(),
+			Data: map[string]string{"verifier": "test"}})
+		result := (verification.CommandVerifier{}).Run(ctx, s.taskCWD(taskID), runtime.verification.Commands)
+		report.Test = &result
+		s.bus.Publish(domain.Event{TaskID: taskID, Type: domain.EventVerificationFinish, Timestamp: time.Now().UTC(),
+			Data: map[string]any{"verifier": "test", "passed": result.Passed, "result": result}})
+		if !result.Passed {
+			report.Passed = false
+		}
+	} else if len(runtime.verification.Commands) > 0 {
+		report.Required = true
+	}
+	return report
+}
+
+func (s *Service) runVerification(ctx context.Context, taskID string, runtime taskRuntime) {
+	report := s.executeVerification(ctx, taskID, runtime)
+	s.finishVerification(taskID, runtime, report)
+}
+
+func (s *Service) finishVerification(taskID string, runtime taskRuntime, report verificationReport) {
+	if !report.Required {
 		status := domain.TaskCompleted
 		reason := "process command exited successfully; no additional verifier configured"
 		if runtime.interactive {
@@ -580,7 +638,7 @@ func (s *Service) runVerification(ctx context.Context, taskID string, runtime ta
 		_ = s.transition(taskID, status, reason)
 		return
 	}
-	if passed {
+	if report.Passed {
 		status := domain.TaskCompleted
 		reason := "all configured verifiers passed"
 		if runtime.interactive {

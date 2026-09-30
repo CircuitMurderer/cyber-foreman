@@ -249,7 +249,10 @@ Rule-based Supervisor 当前已经提供：
 - Action Executor 的能力检查、幂等执行和审计事件
 - argv 测试验证器、单命令超时、输出上限和凭据脱敏
 - Git HEAD、文件内容基线、敏感路径以及 staged/unstaged `git diff --check`
-- 验证失败后的 `attention_required` 状态
+- workspace 安全门禁优先于测试命令，越界后不会执行可能已被篡改的测试
+- 测试失败后在预算内向同一 Agent 追加脱敏修复指令并自动重新验证
+- Agent 断联后按 `max_retries` 重建 session，恢复模型配置，并重放有界的受信任指令上下文
+- 修复预算耗尽或工作区验证失败后的 `attention_required` 状态
 - OpenCode 单任务 mailbox、自动 idle 纠偏和 hard timeout
 - Agent turn 结束后的 `verifying → completed/attention_required` 完成门禁
 
@@ -270,7 +273,8 @@ curl -X POST http://127.0.0.1:8090/api/v1/tasks \
       "idle_timeout":"90s",
       "hard_timeout":"30m",
       "max_nudges":2,
-      "max_retries":2
+      "max_retries":2,
+      "max_test_repairs":2
     },
     "verification":{
       "commands":[{"argv":["./scripts/test"],"timeout":"10m"}],
@@ -295,7 +299,15 @@ curl -X POST http://127.0.0.1:8090/api/v1/tasks/TASK_ID/actions \
   -d '{"type":"continue","message":"继续实现，并把刚才提到的边界情况也补上测试"}'
 ```
 
-任务响应中的 `available_actions` 会明确给出当前可执行的 `interrupt`、`continue`、`cancel` 和 `delete`。其中 `interrupt` 用于正在执行的 turn，`continue` 只用于已经等待输入且仍保有同一 session 的任务。
+不再继续追问时，可以正常结束已经通过验证、正在等待输入的交互任务：
+
+```bash
+curl -X POST http://127.0.0.1:8090/api/v1/tasks/TASK_ID/actions \
+  -H 'Content-Type: application/json' \
+  -d '{"type":"finish"}'
+```
+
+任务响应中的 `available_actions` 会明确给出当前可执行的 `interrupt`、`continue`、`finish`、`cancel` 和 `delete`。其中 `interrupt` 用于正在执行的 turn，`continue` 只用于已经等待输入且仍保有 session 的任务，`finish` 只在 `waiting_input` 出现并会把任务正常标记为 `completed`；它不能绕过失败的验证。
 
 创建普通命令任务：
 
@@ -320,7 +332,7 @@ curl -N -H 'Last-Event-ID: evt-42' http://127.0.0.1:8090/api/v1/tasks/TASK_ID/ev
 curl -X DELETE http://127.0.0.1:8090/api/v1/tasks/TASK_ID
 ```
 
-SSE 事件带有 `id`、`version`、`sequence` 和 `occurred_at`。`serve` 模式下 cursor 与事件历史由 SQLite 持久化，页面刷新或 Foreman 重启后仍可读取完整时间线；非持久化 CLI 模式保留最近 4096 个事件和约 16 MiB。测试或工作区验证任一失败时，任务不会进入 `completed`，而会进入 `attention_required`。
+SSE 事件带有 `id`、`version`、`sequence` 和 `occurred_at`。`serve` 模式下 cursor 与事件历史由 SQLite 持久化，页面刷新或 Foreman 重启后仍可读取完整时间线；非持久化 CLI 模式保留最近 4096 个事件和约 16 MiB。Agent 断联会经过 `running/waiting_input → recovering → 原状态`，旧 session 的迟到事件会被忽略；恢复上下文只包含操作员与监工指令，Agent 历史输出不重放，当前工作区是进度事实来源。工作区验证失败会立即进入 `attention_required`；普通测试失败会先按 `max_test_repairs` 自动修复并重新验证，预算耗尽后再转人工。
 
 Web 任务详情同时提供“任务总结”和“对话与回复”：前者聚合原始任务、最新完整回复、轮次、工具活动、监工干预和验证结论；后者保留逐轮完整对话。两者都从持久事件重建，不会把模型的流式 chunk 当作互相独立的最终答案。
 
@@ -346,7 +358,7 @@ web/                     React/HeroUI 控制台
 
 ## 下一步
 
-1. 完成 SPEC-003 剩余能力：断联重试、测试失败自动修复和模拟 ACP 全闭环测试。
+1. 完成 SPEC-003 剩余能力：模拟 ACP 全闭环故障测试。
 2. 增加 worktree 隔离、任务 diff 和代码审查反馈闭环。
 3. 接入内网本地模型，作为低于确定性规则优先级的建议决策器。
 4. 在对外监听前加入认证、工作目录白名单和命令权限策略。

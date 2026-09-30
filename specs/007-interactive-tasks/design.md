@@ -5,7 +5,8 @@
 ```text
 running → verifying → waiting_input
    ▲                       │
-   └──── continue ─────────┘
+   └──── continue ─────────┤
+                           └── finish → completed
 ```
 
 REST 创建的 Agent 任务标记为 interactive；CLI 任务保持非交互。交互任务一轮验证通过后进入 `waiting_input`，`consumePrompt` 不退出，因此 Adapter、ACP transport、session ID 和事件 channel 都继续存活。新 Prompt 到达 mailbox 后先执行 `waiting_input → running`，重置本轮 Supervisor snapshot 和定时器，再调用原 session 的 `Prompt`。
@@ -18,6 +19,7 @@ API 不让前端从状态自行推断能力，而是动态返回：
 
 - `interrupt`：Agent turn 正在 running，Adapter 支持 cancel。
 - `continue`：interactive runtime 存活，任务为 waiting/可修复 attention。
+- `finish`：interactive runtime 存活、任务为 waiting；关闭 session 并正常进入 completed。
 - `cancel`：任务尚未终止。
 - `delete`：任务已终止或处于 waiting_input。
 

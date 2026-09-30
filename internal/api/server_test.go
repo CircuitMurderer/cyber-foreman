@@ -138,6 +138,49 @@ func TestAgentRequestIsInteractive(t *testing.T) {
 	}
 }
 
+func TestFinishActionCompletesWaitingInteractiveTask(t *testing.T) {
+	adapter := &interactiveAPITestAdapter{events: make(chan domain.Event, 4)}
+	registry, err := agent.NewRegistry(adapter)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bus := event.NewBus()
+	service := app.NewServiceWithRegistry(context.Background(), registry, adapter.Name(), bus)
+	task, err := service.StartTask(app.StartTaskRequest{
+		Adapter: adapter.Name(), Prompt: "one turn", Interactive: true, CWD: t.TempDir(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		current, getErr := service.GetTask(task.ID)
+		if getErr != nil {
+			t.Fatal(getErr)
+		}
+		if current.Status == domain.TaskWaiting {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	current, err := service.GetTask(task.ID)
+	if err != nil || current.Status != domain.TaskWaiting {
+		t.Fatalf("task did not reach waiting_input: %#v err=%v", current, err)
+	}
+
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/tasks/"+task.ID+"/actions", strings.NewReader(`{"type":"finish"}`))
+	request.SetPathValue("id", task.ID)
+	recorder := httptest.NewRecorder()
+	NewServer(service, bus).Handler().ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusAccepted {
+		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	finished, err := service.GetTask(task.ID)
+	if err != nil || finished.Status != domain.TaskCompleted {
+		t.Fatalf("finished task=%#v err=%v", finished, err)
+	}
+}
+
 func TestUnavailableAdapterIsListedButRejectsTasks(t *testing.T) {
 	registry, err := agent.NewRegistry(unavailableAPITestAdapter{})
 	if err != nil {
@@ -177,6 +220,31 @@ func newAPITestService(t *testing.T) (*app.Service, *event.Bus) {
 type apiTestAdapter struct{}
 
 type unavailableAPITestAdapter struct{ apiTestAdapter }
+
+type interactiveAPITestAdapter struct {
+	events chan domain.Event
+}
+
+func (*interactiveAPITestAdapter) Name() string { return "interactive-test" }
+func (*interactiveAPITestAdapter) Capabilities() agent.Capabilities {
+	return agent.Capabilities{StructuredEvents: true, Prompt: true, CancelTurn: true}
+}
+func (a *interactiveAPITestAdapter) Start(_ context.Context, request agent.StartRequest) (agent.Session, error) {
+	sessionID := "session-" + request.TaskID
+	a.events <- domain.Event{TaskID: request.TaskID, SessionID: sessionID, Type: domain.EventAgentStarted, Timestamp: time.Now().UTC()}
+	return agent.Session{ID: sessionID}, nil
+}
+func (a *interactiveAPITestAdapter) Events(context.Context, string) (<-chan domain.Event, error) {
+	return a.events, nil
+}
+func (*interactiveAPITestAdapter) Prompt(context.Context, string, agent.PromptRequest) (agent.PromptResult, error) {
+	return agent.PromptResult{StopReason: "end_turn"}, nil
+}
+func (*interactiveAPITestAdapter) Cancel(context.Context, string) error { return nil }
+func (*interactiveAPITestAdapter) SetConfigOption(context.Context, string, agent.ConfigOption) error {
+	return nil
+}
+func (*interactiveAPITestAdapter) Stop(context.Context, string) error { return nil }
 
 func (unavailableAPITestAdapter) Name() string { return "unavailable" }
 func (unavailableAPITestAdapter) Status() agent.Status {

@@ -118,8 +118,10 @@ func (s *Server) taskAction(w http.ResponseWriter, r *http.Request) {
 		err = s.service.ContinueTask(actionCtx, r.PathValue("id"), strings.TrimSpace(request.Message))
 	case "cancel":
 		err = s.service.StopTask(r.PathValue("id"))
+	case "finish":
+		err = s.service.FinishTask(r.PathValue("id"))
 	default:
-		writeAPIError(w, http.StatusBadRequest, "invalid_action", errors.New("action type must be interrupt, continue, or cancel"))
+		writeAPIError(w, http.StatusBadRequest, "invalid_action", errors.New("action type must be interrupt, continue, finish, or cancel"))
 		return
 	}
 	if err != nil {

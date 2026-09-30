@@ -19,6 +19,7 @@ import {
   cancelTask,
   continueTask,
   errorMessage,
+  finishTask,
   getTask,
   interruptTask,
   terminalStatuses,
@@ -103,9 +104,24 @@ export function TaskDetail({task, onChanged}: TaskDetailProps) {
     }
   }
 
+  async function finish() {
+    if (!task || !window.confirm("确定结束当前任务？任务会标记为已完成，并关闭 Agent session。")) return;
+    setActing(true);
+    setActionError("");
+    try {
+      await finishTask(task.id);
+      await refresh();
+    } catch (error) {
+      setActionError(errorMessage(error));
+    } finally {
+      setActing(false);
+    }
+  }
+
   const actions = new Set(task.available_actions ?? []);
   const canInterrupt = actions.has("interrupt") || task.kind === "agent" && task.status === "running";
   const canContinue = actions.has("continue");
+  const canFinish = actions.has("finish");
   const canCancel = actions.has("cancel") || !terminalStatuses.has(task.status);
 
   return (
@@ -142,7 +158,7 @@ export function TaskDetail({task, onChanged}: TaskDetailProps) {
         <Metric icon={<CheckCircle2 size={17} />} value={metrics.verifications} label="验证结果" />
       </div>
 
-      {(canInterrupt || canContinue || canCancel) && (
+      {(canInterrupt || canContinue || canFinish || canCancel) && (
         <Card className="action-card" variant="secondary">
           <Card.Header>
             <div>
@@ -162,9 +178,16 @@ export function TaskDetail({task, onChanged}: TaskDetailProps) {
                   disabled={acting}
                 />
                 {canContinue ? (
-                  <Button variant="primary" onPress={continueConversation} isDisabled={acting || !message.trim()}>
-                    <Send size={16} /> 继续对话
-                  </Button>
+                  <div className="detail-actions">
+                    <Button variant="primary" onPress={continueConversation} isDisabled={acting || !message.trim()}>
+                      <Send size={16} /> 继续对话
+                    </Button>
+                    {canFinish && (
+                      <Button variant="secondary" onPress={finish} isDisabled={acting}>
+                        <CheckCircle2 size={16} /> 结束任务
+                      </Button>
+                    )}
+                  </div>
                 ) : (
                   <Button variant="secondary" onPress={interrupt} isDisabled={acting || !message.trim()}>
                     <MessageSquarePlus size={16} /> 打断并追加

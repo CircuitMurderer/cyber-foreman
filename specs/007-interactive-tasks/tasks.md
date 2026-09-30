@@ -7,4 +7,5 @@
 - [x] 在任务列表增加删除入口和确认提示。
 - [x] 抽取共享对话聚合器并新增任务总结弹窗。
 - [x] 增加同 session 多轮、零 cancel、SQLite 删除和 replay 清理测试。
+- [x] 增加 waiting_input 的 finish 动作、REST API 与 Web“结束任务”按钮。
 - [ ] 后续增加显式 session 空闲 TTL 与归档策略。

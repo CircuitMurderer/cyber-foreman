@@ -51,7 +51,7 @@ export interface Task {
   error?: string;
   created_at: string;
   updated_at: string;
-  available_actions?: Array<"interrupt" | "continue" | "cancel" | "delete">;
+  available_actions?: Array<"interrupt" | "continue" | "finish" | "cancel" | "delete">;
   links: TaskLinks;
 }
 
@@ -163,6 +163,13 @@ export function cancelTask(id: string): Promise<void> {
   return request<void>(`/api/v1/tasks/${encodeURIComponent(id)}/actions`, {
     method: "POST",
     body: JSON.stringify({type: "cancel"})
+  });
+}
+
+export function finishTask(id: string): Promise<void> {
+  return request<void>(`/api/v1/tasks/${encodeURIComponent(id)}/actions`, {
+    method: "POST",
+    body: JSON.stringify({type: "finish"})
   });
 }
 

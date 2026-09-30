@@ -128,13 +128,13 @@ OpenCode 不支持真正的 mid-turn message 时，nudge 执行为 SPEC-002 已�
 Agent turn 结束后：
 
 1. `running → verifying`；
-2. 并行执行 Test 与 Git Verifier；
-3. 聚合全部必需结果；
+2. 先执行 Workspace/Git Verifier，安全失败立即停止，绝不运行仓库测试；
+3. workspace 通过后执行配置的 Test Verifier；
 4. 全部通过才生成 complete Decision；
-5. 可修复失败生成 bounded corrective action；
-6. 安全失败或预算耗尽生成 attention_required。
+5. 普通测试失败生成 bounded repair Prompt，在同一 session 修复后回到第 1 步；
+6. 安全失败或修复预算耗尽生成 attention_required。
 
-Verifier 完成顺序不影响最终 Decision；聚合器按 verifier ID 排序，保证输入一致时决策一致。
+安全门禁顺序固定，保证输入一致时决策一致，也避免运行已被越界修改的验证脚本。
 
 ## 规则优先级
 
@@ -156,7 +156,8 @@ Verifier 完成顺序不影响最终 Decision；聚合器按 verifier ID 排序�
 - `CancelTurn + Prompt`：执行 cancel-and-follow-up。
 - `MidTurnMessage`：未来可直接发送 nudge，但仍受相同预算控制。
 - 无交互能力：只能 Stop、Retry 或 attention_required。
-- 无 ResumeSession：断联重试必须新建 Session，并用固定模板注入原任务目标与验证证据。
+- 断联恢复当前统一新建 Session，恢复任务级模型配置，并用固定模板注入有界的操作员/监工指令；不重放旧 Agent 输出，以工作区作为进度事实来源。
+- 交互任务在 `waiting_input` 期间断联时先重建空闲 Session，在下一条操作员指令到达时一并注入恢复上下文，避免恢复动作擅自开启新一轮工作。
 
 ## 事件与脱敏
 
@@ -169,4 +170,3 @@ Decision 和 ActionResult 事件只保存：规则、动作、状态、预算、
 ## 后续扩展
 
 本地 Qwen 将实现为额外的 Advisor：接收脱敏 Snapshot 与 Observation，返回建议 Decision。合并器必须先执行本规格的确定性优先级，Advisor 不能覆盖 deny、验证失败或预算耗尽。
-

@@ -3,7 +3,7 @@
 - 状态：IMPLEMENTING
 - 负责人：Cyber Foreman
 - 创建日期：2026-09-18
-- 最后更新：2026-09-18
+- 最后更新：2026-09-30
 - 关联规格：SPEC-001、SPEC-002
 
 ## 背景与问题
@@ -146,7 +146,7 @@ Clock.Now() time.Time
 
 - Observation malformed：记录规则错误并忽略该 Observation；不得猜测动作。
 - Action 执行失败：记录失败证据，在预算内重试一次执行；仍失败则 attention_required。
-- Agent 断联：在 retry 预算内创建新 Session；没有 ResumeSession 能力时明确记录上下文重建方式。
+- Agent 断联：在 retry 预算内创建新 Session，恢复任务级模型配置，并明确记录 `trusted_instructions_and_workspace` 上下文重建方式；旧 Session 的迟到结果必须被忽略。
 - Verifier 超时：视为验证失败，不视为测试通过。
 - Git 不可用或工作区越界：fail closed，进入 attention_required。
 - 本规格所有预算只保存在内存；Foreman 进程退出后任务不可恢复。
@@ -200,8 +200,15 @@ Clock.Now() time.Time
 
 ## 阶段性实现证据
 
+- 2026-09-30：`./scripts/test`、`./scripts/go vet ./...`、`./scripts/go test -race ./...` 与 `git diff --check` 全部通过。
 - OpenCode Prompt、事件、Prompt result 与 timer 已迁入 `app.Service` 单任务 mailbox。
 - 模拟 Adapter 验证 idle timeout 会产生 `idle-nudge`、调用 Cancel、在同一 Session 追加 Prompt，并进入完成门禁。
 - 模拟 Adapter 验证 hard timeout 会停止自动执行并进入 `attention_required`。
+- 模拟 Adapter 验证测试失败会生成有预算的 `repair` Decision，把限长脱敏摘要追加到同一 session，并在修复轮后自动重新验证。
+- 模拟 Adapter 验证测试持续失败时严格停在 `MaxTestRepairs`，随后进入 `attention_required`，不存在无限修复循环。
+- 模拟 Adapter 验证活动 turn 断联后会进入 `recovering`、重建 session、恢复模型选择并重放受信任指令；旧 Agent 输出不会进入恢复 Prompt。
+- 模拟 Adapter 验证 `waiting_input` 期间断联会先恢复空闲 session，并把上下文延迟到下一条操作员指令；连续断联在 `MaxRetries` 后进入 `attention_required`。
+- 进程任务验证表明 workspace 安全检查失败后不会继续执行仓库内测试命令。
+- 真实 OpenCode 1.18.31 + DeepSeek Flash 验证首轮故意写入错误内容，外部测试失败后 Foreman 生成 `test-failed → repair`，同 session 修复并在第二次验证通过后进入 `waiting_input`。
 - 真实 OpenCode 1.18.31 + Gemini 3.8 Flash 验证 operator interrupt 经由 Service 完成 cancel/follow-up，保留上下文并通过 workspace verifier。
 - 真实 idle timeout 验证在 2 秒无进展后自动生成 `idle-nudge`，首轮返回 `cancelled`，追加轮返回 `AUTO-IDLE-OK`，最终任务进入 `completed`。
