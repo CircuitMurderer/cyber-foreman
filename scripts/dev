@@ -4,4 +4,15 @@ set -eu
 SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 PROJECT_DIR=$(CDPATH= cd -- "$SCRIPT_DIR/.." && pwd)
 cd "$PROJECT_DIR"
+
+HAS_AGENTS_FILE=false
+for ARG in "$@"; do
+  case "$ARG" in
+    --agents-file|--agents-file=*) HAS_AGENTS_FILE=true ;;
+  esac
+done
+if [ "$HAS_AGENTS_FILE" = false ] && [ -f "$PROJECT_DIR/config/agents.local.json" ]; then
+  set -- --agents-file "$PROJECT_DIR/config/agents.local.json" "$@"
+fi
+
 exec go run ./cmd/foreman serve "$@"

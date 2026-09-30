@@ -26,6 +26,11 @@ export interface AdapterCapabilities {
 export interface AdapterDescriptor {
   name: string;
   capabilities: AdapterCapabilities;
+  selectable: boolean;
+  driver?: "acp" | "codex-app-server";
+  provider_format?: "openai" | "anthropic" | "google";
+  default_model?: string;
+  default_workspace?: string;
   installed: boolean;
   healthy: boolean;
   command?: string;

@@ -2,6 +2,7 @@ import {Button, Chip, Spinner} from "@heroui/react";
 import {Bot, Command, Inbox, RefreshCw, Trash2} from "lucide-react";
 import type {Task} from "../api";
 import {relativeTime, shortID, statusLabel, statusTone} from "../status";
+import {ConfirmationDialog} from "./ConfirmationDialog";
 
 interface TaskListProps {
   tasks: Task[];
@@ -56,9 +57,18 @@ export function TaskList({tasks, selectedID, loading, onSelect, onDelete, onRefr
               </span>
             </button>
             {task.available_actions?.includes("delete") && (
-              <button className="task-delete" type="button" aria-label={`删除任务 ${shortID(task.id)}`} onClick={() => onDelete(task)}>
-                <Trash2 size={14} />
-              </button>
+              <ConfirmationDialog
+                title="删除任务记录？"
+                description="任务、完整事件和对话历史会从本地数据库移除。这个操作无法撤销。"
+                detail={task.worktree_root ? `隔离 worktree 会保留在：${task.worktree_root}` : undefined}
+                confirmLabel="删除记录"
+                onConfirm={() => onDelete(task)}
+                trigger={(
+                  <Button className="task-delete" variant="ghost" isIconOnly aria-label={`删除任务 ${shortID(task.id)}`}>
+                    <Trash2 size={14} />
+                  </Button>
+                )}
+              />
             )}
           </div>
         ))}

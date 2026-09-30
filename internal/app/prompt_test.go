@@ -374,6 +374,25 @@ func TestPromptTaskRebuildsDisconnectedSessionAndReplaysTrustedContext(t *testin
 	}
 }
 
+func TestPromptTaskUsesConfiguredAgentDefaults(t *testing.T) {
+	base := newPromptTestAdapter(promptModeCompleteEveryTurn)
+	workspace := t.TempDir()
+	configured := agent.WithMetadata(base, agent.Metadata{
+		Selectable: true, DefaultModel: "configured/model", DefaultWorkspace: workspace,
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	service := NewService(ctx, configured, event.NewBus())
+	task, err := service.StartTask(StartTaskRequest{Prompt: "use defaults"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	final := waitForTerminalTask(t, service, task.ID)
+	if final.Status != domain.TaskCompleted || final.CWD != workspace || base.model != "configured/model" {
+		t.Fatalf("task=%#v model=%q", final, base.model)
+	}
+}
+
 func TestPromptTaskStopsWhenSessionRetryBudgetIsExhausted(t *testing.T) {
 	adapter := newDisconnectingPromptAdapter(true)
 	ctx, cancel := context.WithCancel(context.Background())

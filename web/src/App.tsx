@@ -73,8 +73,6 @@ export function App() {
   }
 
   async function handleDelete(task: Task) {
-    const worktreeNotice = task.worktree_root ? `\n\n隔离 worktree 会保留在：\n${task.worktree_root}` : "";
-    if (!window.confirm(`确定删除任务 ${task.id}？任务及其完整事件和对话历史都会从本地数据库移除。${worktreeNotice}`)) return;
     try {
       await deleteTask(task.id);
       const next = tasks.filter((item) => item.id !== task.id);

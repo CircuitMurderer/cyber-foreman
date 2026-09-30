@@ -1,0 +1,73 @@
+package agentconfig
+
+import (
+	"os"
+	"path/filepath"
+	"testing"
+
+	"cyber-foreman/internal/agent"
+)
+
+func TestLoadAndBuildConfiguredAgents(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "agents.json")
+	contents := `{"agents":[
+		{"name":"internal-acp","driver":"acp","command":"agent","args":["acp"],"default_workspace":"/work","default_model":"qwen3.8","provider":{"format":"openai","base_url":"http://models.internal/v1","api_key_env":"MODEL_KEY"}},
+		{"name":"internal-codex","driver":"codex-app-server","command":"codex","args":["app-server"],"default_model":"qwen3.8","provider":{"format":"anthropic","base_url":"http://models.internal/anthropic","api_key_env":"MODEL_KEY"}}
+	]}`
+	if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	profiles, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(profiles) != 2 {
+		t.Fatalf("profiles=%d, want 2", len(profiles))
+	}
+	for _, profile := range profiles {
+		adapter, buildErr := Build(profile)
+		if buildErr != nil {
+			t.Fatalf("build %s: %v", profile.Name, buildErr)
+		}
+		metadata := agent.MetadataOf(adapter)
+		if !metadata.Selectable || metadata.DefaultModel != "qwen3.8" || metadata.ProviderFormat == "" {
+			t.Fatalf("unexpected metadata for %s: %#v", profile.Name, metadata)
+		}
+	}
+}
+
+func TestLoadRejectsUnsafeOrAmbiguousProfiles(t *testing.T) {
+	for name, contents := range map[string]string{
+		"unknown-field":      `{"agents":[{"name":"a","driver":"acp","command":"agent","api_key":"secret"}]}`,
+		"duplicate":          `{"agents":[{"name":"a","driver":"acp","command":"one"},{"name":"a","driver":"acp","command":"two"}]}`,
+		"unknown-format":     `{"agents":[{"name":"a","driver":"acp","command":"agent","default_model":"m","provider":{"format":"ollama"}}]}`,
+		"codex-no-base":      `{"agents":[{"name":"codex","driver":"codex-app-server","command":"codex","default_model":"m","provider":{"format":"openai"}}]}`,
+		"literal-key":        `{"agents":[{"name":"a","driver":"acp","command":"agent","default_model":"m","provider":{"format":"openai","api_key":"secret"}}]}`,
+		"relative-workspace": `{"agents":[{"name":"a","driver":"acp","command":"agent","default_workspace":"relative"}]}`,
+		"invalid-key-env":    `{"agents":[{"name":"a","driver":"acp","command":"agent","default_model":"m","provider":{"format":"openai","api_key_env":"BAD=KEY"}}]}`,
+		"google-responses":   `{"agents":[{"name":"a","driver":"codex-app-server","command":"codex","default_model":"m","provider":{"format":"google","wire_api":"responses","base_url":"https://example.com"}}]}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "agents.json")
+			if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := Load(path); err == nil {
+				t.Fatal("invalid configuration was accepted")
+			}
+		})
+	}
+}
+
+func TestGoogleCodexUsesChatCompatibility(t *testing.T) {
+	adapter, err := Build(Profile{
+		Name: "codex", Driver: DriverCodex, Command: "codex", DefaultModel: "gemini",
+		Provider: &Provider{Format: FormatGoogle, BaseURL: "https://generativelanguage.googleapis.com/v1beta/openai"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if metadata := agent.MetadataOf(adapter); metadata.ProviderFormat != FormatGoogle {
+		t.Fatalf("metadata=%#v", metadata)
+	}
+}

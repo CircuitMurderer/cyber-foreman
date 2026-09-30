@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"errors"
+	"strings"
 
 	"cyber-foreman/internal/domain"
 )
@@ -31,11 +32,60 @@ type StatusProvider interface {
 	Status() Status
 }
 
+type Metadata struct {
+	Selectable       bool   `json:"selectable"`
+	Driver           string `json:"driver,omitempty"`
+	ProviderFormat   string `json:"provider_format,omitempty"`
+	DefaultModel     string `json:"default_model,omitempty"`
+	DefaultWorkspace string `json:"default_workspace,omitempty"`
+}
+
+type MetadataProvider interface {
+	Metadata() Metadata
+}
+
+type ProbeProvider interface {
+	Probe(context.Context) Status
+}
+
 func StatusOf(adapter Adapter) Status {
 	if provider, ok := adapter.(StatusProvider); ok {
 		return provider.Status()
 	}
 	return Status{Installed: true, Healthy: true}
+}
+
+func MetadataOf(adapter Adapter) Metadata {
+	if provider, ok := adapter.(MetadataProvider); ok {
+		return provider.Metadata()
+	}
+	return Metadata{}
+}
+
+func Probe(ctx context.Context, adapter Adapter) Status {
+	if provider, ok := adapter.(ProbeProvider); ok {
+		return provider.Probe(ctx)
+	}
+	return StatusOf(adapter)
+}
+
+func WithMetadata(adapter Adapter, metadata Metadata) Adapter {
+	metadata.Driver = strings.TrimSpace(metadata.Driver)
+	metadata.ProviderFormat = strings.TrimSpace(metadata.ProviderFormat)
+	metadata.DefaultModel = strings.TrimSpace(metadata.DefaultModel)
+	metadata.DefaultWorkspace = strings.TrimSpace(metadata.DefaultWorkspace)
+	return &configuredAdapter{Adapter: adapter, metadata: metadata}
+}
+
+type configuredAdapter struct {
+	Adapter
+	metadata Metadata
+}
+
+func (a *configuredAdapter) Metadata() Metadata { return a.metadata }
+func (a *configuredAdapter) Status() Status     { return StatusOf(a.Adapter) }
+func (a *configuredAdapter) Probe(ctx context.Context) Status {
+	return Probe(ctx, a.Adapter)
 }
 
 type Capabilities struct {

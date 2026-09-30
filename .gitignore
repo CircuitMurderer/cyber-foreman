@@ -1,5 +1,6 @@
 .DS_Store
 .api_key
+config/agents.local.json
 .tools/
 .cache/
 /bin/

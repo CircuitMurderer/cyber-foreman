@@ -8,7 +8,10 @@ import (
 )
 
 func TestRegistryRejectsDuplicateNamesAndListsAdapters(t *testing.T) {
-	registry, err := agent.NewRegistry(processadapter.NewAdapter())
+	configured := agent.WithMetadata(processadapter.NewAdapter(), agent.Metadata{
+		Selectable: true, Driver: "process", DefaultModel: "model", DefaultWorkspace: "/work",
+	})
+	registry, err := agent.NewRegistry(configured)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -16,7 +19,8 @@ func TestRegistryRejectsDuplicateNamesAndListsAdapters(t *testing.T) {
 		t.Fatal("duplicate adapter registration succeeded")
 	}
 	listed := registry.List()
-	if len(listed) != 1 || listed[0].Name != "process" || !listed[0].Installed || !listed[0].Healthy {
+	if len(listed) != 1 || listed[0].Name != "process" || !listed[0].Installed || !listed[0].Healthy ||
+		!listed[0].Selectable || listed[0].DefaultModel != "model" || listed[0].DefaultWorkspace != "/work" {
 		t.Fatalf("unexpected descriptors: %#v", listed)
 	}
 	if _, err := registry.Get("missing"); err == nil {

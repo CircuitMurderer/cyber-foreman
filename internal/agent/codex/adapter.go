@@ -27,6 +27,7 @@ var ErrUnknownSession = errors.New("unknown Codex session")
 const appServerProtocolVersion = 2
 
 type Config struct {
+	Name             string
 	Binary           string
 	Args             []string
 	Env              []string
@@ -84,6 +85,10 @@ type initializeResponse struct {
 }
 
 func NewAdapter(config Config) (*Adapter, error) {
+	config.Name = strings.TrimSpace(config.Name)
+	if config.Name == "" {
+		config.Name = "codex"
+	}
 	config.Binary = strings.TrimSpace(config.Binary)
 	if config.Binary == "" {
 		config.Binary = "codex"
@@ -116,7 +121,7 @@ func NewAdapter(config Config) (*Adapter, error) {
 	return a, nil
 }
 
-func (a *Adapter) Name() string { return "codex" }
+func (a *Adapter) Name() string { return a.config.Name }
 
 func (a *Adapter) Capabilities() agent.Capabilities {
 	return agent.Capabilities{

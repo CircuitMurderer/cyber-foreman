@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -213,10 +214,13 @@ func (s *Service) queueTask(req StartTaskRequest) (domain.Task, agent.Adapter, e
 	}
 	cwd := req.CWD
 	if cwd == "" {
-		var err error
-		cwd, err = os.Getwd()
-		if err != nil {
-			return domain.Task{}, nil, fmt.Errorf("get working directory: %w", err)
+		cwd = agent.MetadataOf(adapter).DefaultWorkspace
+		if cwd == "" {
+			var err error
+			cwd, err = os.Getwd()
+			if err != nil {
+				return domain.Task{}, nil, fmt.Errorf("get working directory: %w", err)
+			}
 		}
 	}
 	now := time.Now().UTC()
@@ -307,8 +311,12 @@ func (s *Service) startQueuedTask(taskID string, req StartTaskRequest, adapter a
 		_ = s.fail(t.ID, -1, err.Error())
 		return err
 	}
-	if req.Model != "" {
-		if err := adapter.SetConfigOption(ctx, session.ID, agent.ConfigOption{ID: "model", Value: req.Model}); err != nil {
+	model := strings.TrimSpace(req.Model)
+	if model == "" {
+		model = agent.MetadataOf(adapter).DefaultModel
+	}
+	if model != "" {
+		if err := adapter.SetConfigOption(ctx, session.ID, agent.ConfigOption{ID: "model", Value: model}); err != nil {
 			cancel()
 			stopCtx, stopCancel := context.WithTimeout(context.Background(), 3*time.Second)
 			_ = adapter.Stop(stopCtx, session.ID)
@@ -325,7 +333,7 @@ func (s *Service) startQueuedTask(taskID string, req StartTaskRequest, adapter a
 	s.runtimes[t.ID] = taskRuntime{
 		adapter: adapter, sessionID: session.ID,
 		startRequest: agent.StartRequest{TaskID: t.ID, Command: append([]string(nil), t.Command...), CWD: t.CWD},
-		model:        req.Model, cancel: cancel, actions: make(chan taskAction, 1),
+		model:        model, cancel: cancel, actions: make(chan taskAction, 1),
 		verification: cloneVerificationRequest(req.Verification), baseline: baseline,
 		prompt: req.Prompt, interruptWith: req.InterruptWith, interactive: req.Interactive, policy: policy,
 	}

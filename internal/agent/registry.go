@@ -62,13 +62,17 @@ type Descriptor struct {
 	Name         string       `json:"name"`
 	Capabilities Capabilities `json:"capabilities"`
 	Status
+	Metadata
 }
 
 func (r *Registry) List() []Descriptor {
 	r.mu.RLock()
 	result := make([]Descriptor, 0, len(r.adapters))
 	for name, adapter := range r.adapters {
-		result = append(result, Descriptor{Name: name, Capabilities: adapter.Capabilities(), Status: StatusOf(adapter)})
+		result = append(result, Descriptor{
+			Name: name, Capabilities: adapter.Capabilities(),
+			Status: StatusOf(adapter), Metadata: MetadataOf(adapter),
+		})
 	}
 	r.mu.RUnlock()
 	sort.Slice(result, func(i, j int) bool { return result[i].Name < result[j].Name })

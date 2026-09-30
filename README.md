@@ -143,17 +143,34 @@ Adapter 与 Provider 解耦：Cyber Foreman 使用 ACP 控制 OpenCode，OpenCod
 
 ## 通用 ACP Agent
 
-`serve` 会注册 OpenCode、Grok Build 与 Codex CLI，并在启动时检查可执行文件、版本、登录状态和协议握手。未安装、未登录或协议不兼容的 Agent 不会阻止 Foreman 启动，但会在 `/api/v1/adapters` 和 Web 控制台中显示为不可用，也不能接收新任务：
+`serve` 默认读取标准库 JSON 配置 [config/agents.json](config/agents.json)，只有 `agents` 数组中的项目会出现在 Web 控制台的 Agent 选择器。启动时会检查可执行文件、版本、登录状态和协议握手；未安装、未登录或协议不兼容的已配置 Agent 会显示为不可用，但不会阻止其他 Agent 启动。
+
+本机路径不要写进提交的默认配置。复制示例到被 Git 忽略的本地文件；`scripts/dev` 会自动优先加载它：
 
 ```bash
-./bin/foreman serve \
-  --opencode-bin /usr/local/bin/opencode \
-  --grok-bin /usr/local/bin/grok \
-  --codex-bin /usr/local/bin/codex
+cp config/agents.example.json config/agents.local.json
+# 编辑 command、default_workspace、provider 和 default_model
+./scripts/dev
 ```
 
-OpenCode 使用 `opencode acp`；Grok Build 使用 `grok --no-auto-update agent stdio`。命令可以是绝对/相对路径，也可以是 PATH 中的名称。
-仓库中存在可执行的 `scripts/opencode` 或 `scripts/grok` 时，`serve` 会优先使用对应的项目本地包装脚本；否则回退到 PATH。
+也可以显式加载部署配置：
+
+```bash
+./bin/foreman serve --agents-file /etc/cyber-foreman/agents.json
+```
+
+配置使用 Go 标准库 `encoding/json` 严格解析，不引入 YAML/TOML 依赖。每个条目支持：
+
+- `driver`：`acp` 或 `codex-app-server`
+- `command`、`args`、`version_args`：可执行文件和结构化协议启动参数
+- `default_workspace`：前端默认工作目录，任务未显式传入时后端也会使用
+- `default_model`：前端默认模型，任务未覆盖时由后端发送给 Agent
+- `provider.format`：`openai`、`anthropic` 或 `google`
+- `provider.base_url`、`provider.api_key_env`：端点和密钥环境变量名；配置文件不接受明文 key
+- `provider.wire_api`：Codex 的 OpenAI Provider 可选 `chat-completions` 或 `responses`
+- `auth_methods`、`auth_optional`：ACP 登录方法及 BYOK 回退策略
+
+Codex 会根据 Provider 字段实际建立 session-local API bridge。ACP Agent 的 Provider 字段同时作为选择器元数据和标准 `FOREMAN_PROVIDER_*` 环境传给包装脚本；OpenCode/Grok 当前仍由各自的 provider catalog 决定具体模型别名，`default_model` 应填写 catalog 中存在的名称。
 
 ### Grok Build Provider
 
@@ -165,8 +182,7 @@ cp config/grok-providers.example.toml .cache/grok/config.toml
 source .api_key
 export HTTPS_PROXY=http://127.0.0.1:7897
 export HTTP_PROXY=http://127.0.0.1:7897
-./scripts/go run ./cmd/foreman serve \
-  --grok-bin ./scripts/grok
+./scripts/dev
 ```
 
 模板默认使用 DeepSeek OpenAI-compatible 端点，同时提供 Anthropic Messages 和 Google OpenAI compatibility alias。API key 只从三个 `FOREMAN_AGENT_API_KEY_*` 环境变量读取，不会写入 TOML。使用 xAI 登录或 `XAI_API_KEY` 时仍可改用默认 Grok preset，或在自定义 profile 中声明 `xai.api_key`、`cached_token`。
@@ -181,21 +197,13 @@ HTTP_PROXY=http://127.0.0.1:7897 \
   --permission-mode dontAsk --single "只回复 OK"
 ```
 
-内网存在其他 ACP v1 Agent，或者安装路径需要统一管理时，可以复制 `config/agents.example.json` 并使用：
-
-```bash
-./bin/foreman serve --agents-file /etc/cyber-foreman/agents.json
-```
-
-profile 支持 `name`、`command`、`args`、`version_args`、`auth_methods` 和 `auth_optional`。`auth_optional=true` 会先尝试列出的 ACP 登录方法，全部失败时再让 Agent 使用自定义 provider 的环境凭据；默认 Grok preset 已开启该行为。配置文件不接受明文密钥；Agent 继承启动 Foreman 时的环境变量和本机登录状态。指定 `--agents-file` 后使用文件内的 Agent 列表，不再加载命令行的 OpenCode/Grok preset。
-
 查看探测结果：
 
 ```bash
 curl http://127.0.0.1:8090/api/v1/adapters
 ```
 
-响应会包含 `installed`、`healthy`、解析后的 `command`、`version`、`protocol_version`、`agent_info` 和失败原因。健康探测只执行版本/登录检查和协议 `initialize`，不会创建 session、发送 Prompt 或产生模型费用。
+响应还会包含 `selectable`、`driver`、`provider_format`、`default_model` 和 `default_workspace`。内建 `process` Adapter 仍供命令任务使用，但 `selectable=false`，不会混入 Agent 下拉列表。健康探测只执行版本/登录检查和协议 `initialize`，不会创建 session、发送 Prompt 或产生模型费用。
 
 ### Codex CLI
 
@@ -204,10 +212,9 @@ Codex 不使用 ACP；Foreman 通过官方 `codex app-server` 的 JSONL 协议�
 ```bash
 codex --version
 codex login status
-./bin/foreman serve --codex-bin codex
 ```
 
-每个 Foreman 任务启动一个临时 Codex thread，工作区采用 `workspace-write`，审批策略为 `never`；同一任务的“继续”会复用该 thread，打断则调用 `turn/interrupt`。若内网机器已预装并登录 Codex CLI，只需让 `codex` 位于 PATH，或显式传入 `--codex-bin`。
+每个 Foreman 任务启动一个临时 Codex thread，工作区采用 `workspace-write`，审批策略为 `never`；同一任务的“继续”会复用该 thread，打断则调用 `turn/interrupt`。若使用登录态，Codex profile 省略 `provider` 即可；若使用内网 API，则在同一个 profile 中配置 Provider。
 
 内网也可以让 Codex 使用 Responses、OpenAI-compatible Chat Completions 或 Anthropic-compatible Messages，而不依赖 ChatGPT 登录。Foreman 为每个 Codex session 启动一个仅监听 loopback 的临时桥接器：Responses 原样转发，另外两种格式双向转换。API key 只从指定环境变量读取，并从 Codex 子进程环境中剥离，不会作为 Codex 参数、任务事件或数据库字段保存。API 模式还会关闭 Codex analytics、插件功能和远程插件目录刷新，避免启动时访问 ChatGPT/GitHub 控制面；模型请求仍按配置访问指定 API base。
 
@@ -218,28 +225,29 @@ source .api_key
 export HTTP_PROXY=http://127.0.0.1:7897
 export HTTPS_PROXY=http://127.0.0.1:7897
 export ALL_PROXY=http://127.0.0.1:7897
-
-./scripts/go run ./cmd/foreman serve \
-  --codex-bin codex \
-  --codex-api-base https://api.deepseek.com \
-  --codex-api-key-env FOREMAN_AGENT_API_KEY_OPENAI \
-  --codex-model deepseek-flash \
-  --codex-api-format chat-completions
 ```
 
-使用 Anthropic Messages 时改为：
+Codex profile：
 
-```bash
-./scripts/go run ./cmd/foreman serve \
-  --codex-api-base https://api.deepseek.com/anthropic \
-  --codex-api-key-env FOREMAN_AGENT_API_KEY_ANTHROPIC \
-  --codex-model deepseek-flash \
-  --codex-api-format anthropic-messages
+```json
+{
+  "name": "codex",
+  "driver": "codex-app-server",
+  "command": "codex",
+  "args": ["app-server"],
+  "default_model": "deepseek-flash",
+  "provider": {
+    "format": "openai",
+    "wire_api": "chat-completions",
+    "base_url": "https://api.deepseek.com",
+    "api_key_env": "FOREMAN_AGENT_API_KEY_OPENAI"
+  }
+}
 ```
 
-若上游原生支持 Responses API，则使用 `--codex-api-format responses`。Google 现阶段使用 `https://generativelanguage.googleapis.com/v1beta/openai` 与 `chat-completions`。
+使用 Anthropic Messages 时设为 `"format":"anthropic"`；若 OpenAI 上游原生支持 Responses API，则设为 `"wire_api":"responses"`。Google 设为 `"format":"google"`，现阶段通过 `https://generativelanguage.googleapis.com/v1beta/openai` 的 Chat Completions compatibility 接入。
 
-创建任务时选择 `adapter: "codex"` 即可；省略任务级 `model` 时使用 `--codex-model`，传入任务级 `model` 则只覆盖该任务后续 turn 的模型。`--codex-api-base` 留空时仍使用原来的 Codex/桌面版登录态。兼容层支持文本流、函数工具调用，以及 Gemini thought signature、DeepSeek reasoning content、Anthropic thinking signature 的跨轮回填；当前不转换 Responses API 专有的托管工具，例如 OpenAI web search。
+创建任务时选择 `adapter: "codex"` 即可；省略任务级 `model` 时使用 profile 的 `default_model`，传入任务级模型则只覆盖该任务后续 turn。兼容层支持文本流、函数工具调用，以及 Gemini thought signature、DeepSeek reasoning content、Anthropic thinking signature 的跨轮回填；当前不转换 Responses API 专有的托管工具，例如 OpenAI web search。旧的 `--codex-*`、`--opencode-bin` 和 `--grok-bin` 参数只在显式传入 `--agents-file ""` 的兼容模式生效。
 
 ## 确定性验证
 
@@ -377,7 +385,7 @@ web/                     React/HeroUI 控制台
 
 ## 下一步
 
-1. 增加 Provider Profile、认证、工作目录白名单和命令权限策略。
+1. 增加 API 认证、工作目录白名单和命令权限策略。
 2. 接入内网本地模型，作为低于确定性规则优先级的建议决策器。
 
 > 当前 HTTP API 可以启动任意本地命令，因此默认只监听 `127.0.0.1`，不要直接暴露到局域网。

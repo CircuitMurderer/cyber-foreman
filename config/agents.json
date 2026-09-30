@@ -6,7 +6,6 @@
       "command": "./scripts/opencode",
       "args": ["acp"],
       "version_args": ["--version"],
-      "default_workspace": "/absolute/path/to/project",
       "default_model": "foreman-openai/deepseek-flash",
       "provider": {
         "format": "openai",
@@ -22,7 +21,6 @@
       "version_args": ["version"],
       "auth_methods": ["xai.api_key", "cached_token"],
       "auth_optional": true,
-      "default_workspace": "/absolute/path/to/project",
       "default_model": "foreman-openai",
       "provider": {
         "format": "openai",
@@ -35,7 +33,6 @@
       "driver": "codex-app-server",
       "command": "codex",
       "args": ["app-server"],
-      "default_workspace": "/absolute/path/to/project",
       "default_model": "deepseek-flash",
       "provider": {
         "format": "openai",

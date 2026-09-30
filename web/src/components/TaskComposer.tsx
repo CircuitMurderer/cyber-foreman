@@ -1,6 +1,6 @@
 import {useEffect, useMemo, useState, type FormEvent} from "react";
 import {Button, Card} from "@heroui/react";
-import {Bot, CheckCircle2, Command, FolderGit2, Plus, ShieldCheck, TimerReset} from "lucide-react";
+import {Bot, CheckCircle2, ChevronDown, ChevronUp, Command, FolderGit2, Plus, ShieldCheck, TimerReset} from "lucide-react";
 import {
   createTask,
   errorMessage,
@@ -41,21 +41,26 @@ export function TaskComposer({adapters, onCreated}: TaskComposerProps) {
     [adapter, adapters]
   );
 
-  const availableAdapters = useMemo(
-    () => adapters.filter((item) => item.installed && item.healthy),
+  const configuredAdapters = useMemo(
+    () => adapters.filter((item) => item.selectable),
     [adapters]
   );
 
+  const availableAdapters = useMemo(
+    () => configuredAdapters.filter((item) => item.installed && item.healthy),
+    [configuredAdapters]
+  );
+
   useEffect(() => {
-    if (availableAdapters.length === 0) {
+    if (configuredAdapters.length === 0) {
       setAdapter("");
       return;
     }
-    if (availableAdapters.some((item) => item.name === adapter)) return;
-    const preferred = availableAdapters.find((item) => item.name === "opencode") ?? availableAdapters[0];
+    if (configuredAdapters.some((item) => item.name === adapter)) return;
+    const preferred = availableAdapters.find((item) => item.name === "opencode") ?? availableAdapters[0] ?? configuredAdapters[0];
     setAdapter(preferred.name);
     setKind(preferred.capabilities.prompt ? "agent" : "command");
-  }, [adapter, availableAdapters]);
+  }, [adapter, availableAdapters, configuredAdapters]);
 
   useEffect(() => {
     if (!selectedAdapter) return;
@@ -68,7 +73,9 @@ export function TaskComposer({adapters, onCreated}: TaskComposerProps) {
   }, [kind]);
 
   useEffect(() => {
-    setModel("");
+    if (!selectedAdapter) return;
+    setModel(selectedAdapter.default_model ?? "");
+    setWorkspace(selectedAdapter.default_workspace ?? "");
   }, [adapter]);
 
   async function submit(event: FormEvent) {
@@ -121,42 +128,27 @@ export function TaskComposer({adapters, onCreated}: TaskComposerProps) {
           <Card.Title>派发新任务</Card.Title>
           <Card.Description>监工会持续观察、纠偏并执行完成门禁。</Card.Description>
         </div>
-        <div className="composer-mark"><Plus size={20} /></div>
       </Card.Header>
       <Card.Content>
         <form className="composer-form" onSubmit={submit}>
           <div className="form-grid two-columns">
             <Field label="执行器" icon={<Bot size={15} />}>
-              <select
-                className="control"
-                value={adapter}
-                onChange={(event) => setAdapter(event.target.value)}
-                disabled={submitting}
-              >
-                {adapters.map((item) => (
-                  <option key={item.name} value={item.name} disabled={!item.installed || !item.healthy}>
-                    {adapterLabel(item)}
-                  </option>
-                ))}
-              </select>
-              {selectedAdapter && (
-                <span className={`adapter-health ${selectedAdapter.healthy ? "healthy" : "unhealthy"}`}>
-                  {selectedAdapter.healthy
-                    ? selectedAdapter.capabilities.prompt
-                      ? `ACP v${selectedAdapter.protocol_version ?? "?"}${selectedAdapter.version ? ` · ${selectedAdapter.version}` : ""}`
-                      : "本地命令执行器"
-                    : selectedAdapter.error || "Agent 不可用"}
-                </span>
-              )}
-              {adapters.some((item) => !item.installed || !item.healthy) && (
-                <div className="unavailable-adapters">
-                  {adapters.filter((item) => !item.installed || !item.healthy).map((item) => (
-                    <span key={item.name}><strong>{item.name}</strong>：{item.error || "ACP 健康检查失败"}</span>
+              <div className="adapter-select-wrap" tabIndex={0} data-tooltip={selectedAdapter ? adapterHint(selectedAdapter) : "没有配置可用的执行器"}>
+                <select
+                  className="control"
+                  value={adapter}
+                  onChange={(event) => setAdapter(event.target.value)}
+                  disabled={submitting}
+                >
+                  {configuredAdapters.map((item) => (
+                    <option key={item.name} value={item.name} disabled={!item.installed || !item.healthy}>
+                      {adapterLabel(item)}
+                    </option>
                   ))}
-                </div>
-              )}
+                </select>
+              </div>
             </Field>
-            <Field label="工作区" icon={<FolderGit2 size={15} />} hint="留空使用后端当前目录">
+            <Field label="工作区" icon={<FolderGit2 size={15} />} hint="默认值来自 Agent 配置">
               <input
                 className="control"
                 value={workspace}
@@ -191,7 +183,7 @@ export function TaskComposer({adapters, onCreated}: TaskComposerProps) {
                 />
               </Field>
               <Field label="模型">
-                <input className="control" value={model} onChange={(event) => setModel(event.target.value)} placeholder="留空使用 Agent 默认模型" disabled={submitting} />
+                <input className="control" value={model} onChange={(event) => setModel(event.target.value)} placeholder={selectedAdapter?.default_model || "留空使用 Agent 默认模型"} disabled={submitting} />
               </Field>
             </>
           ) : (
@@ -219,8 +211,15 @@ export function TaskComposer({adapters, onCreated}: TaskComposerProps) {
               <input type="checkbox" checked={runTests} onChange={(event) => setRunTests(event.target.checked)} />
               <span><CheckCircle2 size={16} /> 运行验证命令</span>
             </label>
-            <button className="advanced-toggle" type="button" onClick={() => setAdvanced((value) => !value)}>
-              <TimerReset size={15} /> {advanced ? "收起策略" : "监督策略"}
+            <button
+              className="policy-expand"
+              type="button"
+              aria-expanded={advanced}
+              aria-label={advanced ? "收起监督策略" : "展开监督策略"}
+              data-tooltip={advanced ? "收起监督策略" : "展开监督策略"}
+              onClick={() => setAdvanced((value) => !value)}
+            >
+              {advanced ? <ChevronUp size={16} /> : <ChevronDown size={16} />}
             </button>
           </div>
 
@@ -233,6 +232,10 @@ export function TaskComposer({adapters, onCreated}: TaskComposerProps) {
 
           {advanced && kind === "agent" && (
             <div className="advanced-panel">
+              <div className="advanced-header">
+                <TimerReset size={16} />
+                <div><strong>监督策略</strong><span>控制空转提醒、硬超时和自动恢复预算</span></div>
+              </div>
               <Field label="空转超时"><input className="control mono" value={idleTimeout} onChange={(event) => setIdleTimeout(event.target.value)} /></Field>
               <Field label="硬超时"><input className="control mono" value={hardTimeout} onChange={(event) => setHardTimeout(event.target.value)} /></Field>
               <Field label="最大提醒"><input className="control" type="number" min={0} value={maxNudges} onChange={(event) => setMaxNudges(Number(event.target.value))} /></Field>
@@ -256,6 +259,15 @@ function adapterLabel(adapter: AdapterDescriptor): string {
   if (!adapter.installed) return `${title}（未安装）`;
   if (!adapter.healthy) return `${title}（不可用）`;
   return adapter.version ? `${title} · ${adapter.version}` : title;
+}
+
+function adapterHint(adapter: AdapterDescriptor): string {
+  if (!adapter.healthy) return adapter.error || `${adapter.name} 不可用`;
+  if (!adapter.capabilities.prompt) return "本地命令执行器";
+  const protocol = adapter.driver === "codex-app-server"
+    ? "Codex App Server"
+    : `ACP v${adapter.protocol_version ?? "?"}`;
+  return [protocol, adapter.provider_format, adapter.version].filter(Boolean).join(" · ");
 }
 
 function Field({label, icon, hint, children}: {label: string; icon?: React.ReactNode; hint?: string; children: React.ReactNode}) {

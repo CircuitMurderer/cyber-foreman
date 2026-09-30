@@ -19,6 +19,7 @@ import (
 	codexadapter "cyber-foreman/internal/agent/codex"
 	opencodeadapter "cyber-foreman/internal/agent/opencode"
 	processadapter "cyber-foreman/internal/agent/process"
+	"cyber-foreman/internal/agentconfig"
 	"cyber-foreman/internal/api"
 	"cyber-foreman/internal/app"
 	"cyber-foreman/internal/domain"
@@ -144,7 +145,7 @@ func serve(ctx context.Context, args []string) error {
 	codexAPIKeyEnv := flags.String("codex-api-key-env", "OPENAI_API_KEY", "environment variable containing the Codex provider API key")
 	codexModel := flags.String("codex-model", "", "default Codex model when --codex-api-base is set")
 	codexAPIFormat := flags.String("codex-api-format", "chat-completions", "Codex provider wire format: responses, chat-completions, or anthropic-messages")
-	agentsFile := flags.String("agents-file", "", "JSON file containing custom ACP agent profiles")
+	agentsFile := flags.String("agents-file", "config/agents.json", "JSON file containing selectable agent profiles; empty enables legacy command flags")
 	webDir := flags.String("web-dir", "web/dist", "Vite production build directory; empty disables the web console")
 	databasePath := flags.String("db", "data/foreman.db", "SQLite database path")
 	if err := flags.Parse(args); err != nil {
@@ -157,45 +158,69 @@ func serve(ctx context.Context, args []string) error {
 	}
 	defer store.Close()
 	bus := event.NewBusWithJournal(store)
-	profiles := []acpagent.Profile{
-		acpagent.OpenCodeProfile(*opencodeBinary),
-		acpagent.GrokProfile(*grokBinary),
-	}
+	configuredAdapters := []agent.Adapter{processadapter.NewAdapter()}
 	if *agentsFile != "" {
-		profiles, err = acpagent.LoadProfiles(*agentsFile)
-		if err != nil {
-			return err
+		profiles, loadErr := agentconfig.Load(*agentsFile)
+		if loadErr != nil {
+			return loadErr
 		}
-	}
-	configuredAdapters := make([]agent.Adapter, 0, len(profiles)+2)
-	configuredAdapters = append(configuredAdapters, processadapter.NewAdapter())
-	for _, profile := range profiles {
-		adapter, adapterErr := acpagent.NewAdapter(acpagent.Config{Profile: profile})
-		if adapterErr != nil {
-			return fmt.Errorf("configure ACP adapter %q: %w", profile.Name, adapterErr)
+		for _, profile := range profiles {
+			adapter, adapterErr := agentconfig.Build(profile)
+			if adapterErr != nil {
+				return fmt.Errorf("configure agent %q: %w", profile.Name, adapterErr)
+			}
+			status := agent.Probe(ctx, adapter)
+			if !status.Healthy {
+				fmt.Fprintf(os.Stderr, "warning: agent %s unavailable: %s\n", profile.Name, status.Error)
+			}
+			configuredAdapters = append(configuredAdapters, adapter)
 		}
-		status := adapter.Probe(ctx)
-		if !status.Healthy {
-			fmt.Fprintf(os.Stderr, "warning: ACP adapter %s unavailable: %s\n", profile.Name, status.Error)
+	} else {
+		profiles := []acpagent.Profile{
+			acpagent.OpenCodeProfile(*opencodeBinary),
+			acpagent.GrokProfile(*grokBinary),
 		}
-		configuredAdapters = append(configuredAdapters, adapter)
-	}
-	codexConfig := codexadapter.Config{Binary: *codexBinary}
-	if strings.TrimSpace(*codexAPIBase) != "" {
-		codexConfig.Provider = &codexadapter.ProviderConfig{
-			BaseURL: *codexAPIBase, APIKeyEnv: *codexAPIKeyEnv, DefaultModel: *codexModel,
-			Protocol: codexadapter.ProviderProtocol(*codexAPIFormat),
+		for _, profile := range profiles {
+			adapter, adapterErr := acpagent.NewAdapter(acpagent.Config{Profile: profile})
+			if adapterErr != nil {
+				return fmt.Errorf("configure ACP adapter %q: %w", profile.Name, adapterErr)
+			}
+			status := adapter.Probe(ctx)
+			if !status.Healthy {
+				fmt.Fprintf(os.Stderr, "warning: ACP adapter %s unavailable: %s\n", profile.Name, status.Error)
+			}
+			configuredAdapters = append(configuredAdapters, agent.WithMetadata(adapter, agent.Metadata{
+				Selectable: true, Driver: agentconfig.DriverACP,
+			}))
 		}
+		codexConfig := codexadapter.Config{Binary: *codexBinary}
+		if strings.TrimSpace(*codexAPIBase) != "" {
+			codexConfig.Provider = &codexadapter.ProviderConfig{
+				BaseURL: *codexAPIBase, APIKeyEnv: *codexAPIKeyEnv, DefaultModel: *codexModel,
+				Protocol: codexadapter.ProviderProtocol(*codexAPIFormat),
+			}
+		}
+		codexAdapter, codexErr := codexadapter.NewAdapter(codexConfig)
+		if codexErr != nil {
+			return fmt.Errorf("configure Codex adapter: %w", codexErr)
+		}
+		codexStatus := codexAdapter.Probe(ctx)
+		if !codexStatus.Healthy {
+			fmt.Fprintf(os.Stderr, "warning: Codex adapter unavailable: %s\n", codexStatus.Error)
+		}
+		providerFormat := ""
+		if codexConfig.Provider != nil {
+			if codexConfig.Provider.Protocol == codexadapter.ProtocolAnthropic {
+				providerFormat = agentconfig.FormatAnthropic
+			} else {
+				providerFormat = agentconfig.FormatOpenAI
+			}
+		}
+		configuredAdapters = append(configuredAdapters, agent.WithMetadata(codexAdapter, agent.Metadata{
+			Selectable: true, Driver: agentconfig.DriverCodex,
+			ProviderFormat: providerFormat, DefaultModel: *codexModel,
+		}))
 	}
-	codexAdapter, err := codexadapter.NewAdapter(codexConfig)
-	if err != nil {
-		return fmt.Errorf("configure Codex adapter: %w", err)
-	}
-	codexStatus := codexAdapter.Probe(ctx)
-	if !codexStatus.Healthy {
-		fmt.Fprintf(os.Stderr, "warning: Codex adapter unavailable: %s\n", codexStatus.Error)
-	}
-	configuredAdapters = append(configuredAdapters, codexAdapter)
 	adapters, err := agent.NewRegistry(configuredAdapters...)
 	if err != nil {
 		return fmt.Errorf("configure adapter registry: %w", err)

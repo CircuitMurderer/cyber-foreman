@@ -1,15 +1,16 @@
 import {useMemo, useState} from "react";
-import {Button, Card, Chip} from "@heroui/react";
+import {Button, Card, Chip, Modal, useOverlayState} from "@heroui/react";
 import {
   Activity,
   AlertTriangle,
   Bot,
+  Check,
   CheckCircle2,
-  CircleStop,
   Clock3,
   GitBranch,
   MessageSquarePlus,
   Send,
+  Square,
   Radio,
   ScrollText,
   ShieldAlert,
@@ -31,6 +32,7 @@ import {useTaskEvents, type StreamState} from "../useTaskEvents";
 import {ConversationModal} from "./ConversationModal";
 import {TaskSummaryModal} from "./TaskSummaryModal";
 import {TaskDiffModal} from "./TaskDiffModal";
+import {ConfirmationDialog} from "./ConfirmationDialog";
 
 interface TaskDetailProps {
   task?: Task;
@@ -92,7 +94,7 @@ export function TaskDetail({task, onChanged}: TaskDetailProps) {
   }
 
   async function cancel() {
-    if (!task || !window.confirm("确定停止这个任务？当前 Agent turn 会被取消。")) return;
+    if (!task) return;
     setActing(true);
     setActionError("");
     try {
@@ -106,7 +108,7 @@ export function TaskDetail({task, onChanged}: TaskDetailProps) {
   }
 
   async function finish() {
-    if (!task || !window.confirm("确定结束当前任务？任务会标记为已完成，并关闭 Agent session。")) return;
+    if (!task) return;
     setActing(true);
     setActionError("");
     try {
@@ -154,10 +156,10 @@ export function TaskDetail({task, onChanged}: TaskDetailProps) {
       )}
 
       <div className="metric-grid">
-        <Metric icon={<ScrollText size={17} />} value={events.length} label="事件" />
-        <Metric icon={<Bot size={17} />} value={metrics.decisions} label="监工决策" />
-        <Metric icon={<TerminalSquare size={17} />} value={metrics.toolEvents} label="工具活动" />
-        <Metric icon={<CheckCircle2 size={17} />} value={metrics.verifications} label="验证结果" />
+        <Metric icon={<ScrollText size={17} />} value={events.length} label="事件" kind="events" events={events} />
+        <Metric icon={<Bot size={17} />} value={metrics.decisions} label="监工决策" kind="decisions" events={events} />
+        <Metric icon={<TerminalSquare size={17} />} value={metrics.toolEvents} label="工具活动" kind="tools" events={events} />
+        <Metric icon={<CheckCircle2 size={17} />} value={metrics.verifications} label="验证结果" kind="verifications" events={events} />
       </div>
 
       {(canInterrupt || canContinue || canFinish || canCancel) && (
@@ -169,39 +171,49 @@ export function TaskDetail({task, onChanged}: TaskDetailProps) {
             </div>
           </Card.Header>
           <Card.Content className="action-content">
-            {(canInterrupt || canContinue) && (
-              <div className="interrupt-row">
+            <div className="action-dialog">
+              {(canInterrupt || canContinue) && (
                 <textarea
-                  className="control textarea"
-                  rows={2}
+                  className="control textarea action-textarea"
+                  rows={3}
                   value={message}
                   onChange={(event) => setMessage(event.target.value)}
                   placeholder={canContinue ? "继续追问，或给 Agent 新的后续任务……" : "补充上下文，或要求 Agent 调整方向……"}
                   disabled={acting}
                 />
-                {canContinue ? (
-                  <div className="detail-actions">
-                    <Button variant="primary" onPress={continueConversation} isDisabled={acting || !message.trim()}>
-                      <Send size={16} /> 继续对话
-                    </Button>
-                    {canFinish && (
-                      <Button variant="secondary" onPress={finish} isDisabled={acting}>
-                        <CheckCircle2 size={16} /> 结束任务
-                      </Button>
-                    )}
-                  </div>
-                ) : (
-                  <Button variant="secondary" onPress={interrupt} isDisabled={acting || !message.trim()}>
-                    <MessageSquarePlus size={16} /> 打断并追加
-                  </Button>
+              )}
+              <div className="action-dock" aria-label="任务操作">
+                {canContinue && (
+                  <ActionOrb label="继续对话" tone="primary" disabled={acting || !message.trim()} onClick={continueConversation}>
+                    <Send size={19} />
+                  </ActionOrb>
+                )}
+                {!canContinue && canInterrupt && (
+                  <ActionOrb label="打断并追加" tone="primary" disabled={acting || !message.trim()} onClick={interrupt}>
+                    <MessageSquarePlus size={19} />
+                  </ActionOrb>
+                )}
+                {canFinish && (
+                  <ConfirmationDialog
+                    title="结束当前任务？"
+                    description="任务会标记为已完成，并关闭当前 Agent session。"
+                    confirmLabel="结束任务"
+                    tone="primary"
+                    onConfirm={finish}
+                    trigger={<ActionOrb label="结束任务" tone="success" disabled={acting}><Check size={19} /></ActionOrb>}
+                  />
+                )}
+                {canCancel && (
+                  <ConfirmationDialog
+                    title="停止当前任务？"
+                    description="正在运行的 Agent turn 会被取消，任务随后进入停止状态。"
+                    confirmLabel="停止任务"
+                    onConfirm={cancel}
+                    trigger={<ActionOrb label="停止任务" tone="danger" disabled={acting}><Square size={17} /></ActionOrb>}
+                  />
                 )}
               </div>
-            )}
-            {canCancel && (
-              <Button variant="danger-soft" size="sm" onPress={cancel} isDisabled={acting}>
-                <CircleStop size={16} /> 停止任务
-              </Button>
-            )}
+            </div>
             {actionError && <div className="inline-error">{actionError}</div>}
           </Card.Content>
         </Card>
@@ -220,8 +232,77 @@ export function TaskDetail({task, onChanged}: TaskDetailProps) {
   );
 }
 
-function Metric({icon, value, label}: {icon: React.ReactNode; value: number; label: string}) {
-  return <div className="metric"><span>{icon}</span><strong>{value}</strong><small>{label}</small></div>;
+function ActionOrb({
+  label, tone, disabled, onClick, onPress, children
+}: {
+  label: string;
+  tone: "primary" | "success" | "danger";
+  disabled: boolean;
+  onClick?: () => void | Promise<void>;
+  onPress?: () => void;
+  children: React.ReactNode;
+}) {
+  return (
+    <Button
+      className={`action-orb ${tone}`}
+      variant="secondary"
+      isIconOnly
+      aria-label={label}
+      data-tooltip={label}
+      isDisabled={disabled}
+      onPress={onPress ?? (onClick ? () => void onClick() : undefined)}
+    >
+      {children}
+    </Button>
+  );
+}
+
+type MetricKind = "events" | "decisions" | "tools" | "verifications";
+
+function Metric({icon, value, label, kind, events}: {
+  icon: React.ReactNode;
+  value: number;
+  label: string;
+  kind: MetricKind;
+  events: ForemanEvent[];
+}) {
+  const details = metricEvents(events, kind);
+  const state = useOverlayState();
+  return (
+    <Modal state={state}>
+      <Button className="metric" variant="secondary" aria-label={`查看${label}详情`} onPress={state.open}>
+        <span>{icon}</span><strong>{value}</strong><small>{label}</small>
+      </Button>
+      <Modal.Backdrop variant="blur">
+        <Modal.Container size="lg" scroll="inside" placement="center">
+          <Modal.Dialog className="metric-dialog">
+            <Modal.CloseTrigger />
+            <Modal.Header className="conversation-header">
+              <div><Modal.Heading>{label}详情</Modal.Heading><p>共 {details.length} 条记录，最新记录优先。</p></div>
+            </Modal.Header>
+            <Modal.Body className="metric-detail-list">
+              {details.length === 0 ? (
+                <div className="metric-detail-empty">当前任务还没有{label}记录。</div>
+              ) : [...details].reverse().map((event) => (
+                <article className="metric-detail-item" key={event.id || `${event.type}-${event.sequence}`}>
+                  <header><strong>{eventLabel(event.type)}</strong><time>{event.occurred_at ? absoluteTime(event.occurred_at) : "刚刚"}</time></header>
+                  {eventSummary(event) && <p>{eventSummary(event)}</p>}
+                  {event.data !== undefined && <pre>{JSON.stringify(event.data, null, 2)}</pre>}
+                </article>
+              ))}
+            </Modal.Body>
+          </Modal.Dialog>
+        </Modal.Container>
+      </Modal.Backdrop>
+    </Modal>
+  );
+}
+
+function metricEvents(events: ForemanEvent[], kind: MetricKind): ForemanEvent[] {
+  if (kind === "events") return events;
+  if (kind === "decisions") return events.filter((event) => event.type === "supervisor.decision");
+  if (kind === "verifications") return events.filter((event) => event.type === "verification.finished");
+  return events.filter((event) => event.type === "agent.session_update" && sessionUpdate(event) === "tool_call_update");
 }
 
 function StreamIndicator({state}: {state: StreamState}) {
