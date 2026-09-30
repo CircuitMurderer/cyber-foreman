@@ -31,6 +31,7 @@ func NewServer(service *app.Service, bus *event.Bus, frontend ...http.Handler) *
 	s.mux.HandleFunc("GET /api/v1/tasks", s.listTasks)
 	s.mux.HandleFunc("POST /api/v1/tasks", s.createTask)
 	s.mux.HandleFunc("GET /api/v1/tasks/{id}", s.getTask)
+	s.mux.HandleFunc("GET /api/v1/tasks/{id}/diff", s.taskDiff)
 	s.mux.HandleFunc("DELETE /api/v1/tasks/{id}", s.deleteTask)
 	s.mux.HandleFunc("POST /api/v1/tasks/{id}/actions", s.taskAction)
 	s.mux.HandleFunc("GET /api/v1/tasks/{id}/events", s.taskEvents)
@@ -89,6 +90,18 @@ func (s *Server) getTask(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, newTaskResponse(task, s.service.AvailableActions(task.ID)...))
+}
+
+func (s *Server) taskDiff(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+	defer cancel()
+	diff, err := s.service.TaskDiff(ctx, r.PathValue("id"))
+	if err != nil {
+		status, code := classifyError(err)
+		writeAPIError(w, status, code, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, diff)
 }
 
 func (s *Server) deleteTask(w http.ResponseWriter, r *http.Request) {
@@ -316,6 +329,8 @@ func classifyError(err error) (int, string) {
 		return http.StatusBadRequest, "adapter_not_found"
 	case errors.Is(err, agent.ErrAdapterUnavailable):
 		return http.StatusConflict, "adapter_unavailable"
+	case errors.Is(err, app.ErrDiffUnavailable):
+		return http.StatusConflict, "diff_unavailable"
 	case errors.Is(err, app.ErrTaskNotRunning), errors.Is(err, app.ErrActionUnavailable), errors.Is(err, app.ErrInvalidTransition), errors.Is(err, app.ErrTaskNotDeletable):
 		return http.StatusConflict, "action_conflict"
 	default:

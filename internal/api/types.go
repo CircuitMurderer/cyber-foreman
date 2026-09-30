@@ -13,13 +13,14 @@ import (
 )
 
 type createTaskRequest struct {
-	Kind         string              `json:"kind,omitempty"`
-	Adapter      string              `json:"adapter"`
-	Workspace    string              `json:"workspace,omitempty"`
-	Input        taskInput           `json:"input"`
-	Model        string              `json:"model,omitempty"`
-	Supervision  *supervisionPolicy  `json:"supervision,omitempty"`
-	Verification verificationRequest `json:"verification,omitempty"`
+	Kind          string              `json:"kind,omitempty"`
+	Adapter       string              `json:"adapter"`
+	Workspace     string              `json:"workspace,omitempty"`
+	WorkspaceMode string              `json:"workspace_mode,omitempty"`
+	Input         taskInput           `json:"input"`
+	Model         string              `json:"model,omitempty"`
+	Supervision   *supervisionPolicy  `json:"supervision,omitempty"`
+	Verification  verificationRequest `json:"verification,omitempty"`
 }
 
 type taskInput struct {
@@ -61,17 +62,20 @@ type taskActionRequest struct {
 }
 
 type taskResponse struct {
-	ID        string            `json:"id"`
-	Kind      domain.TaskKind   `json:"kind"`
-	Adapter   string            `json:"adapter"`
-	Workspace string            `json:"workspace,omitempty"`
-	Status    domain.TaskStatus `json:"status"`
-	ExitCode  *int              `json:"exit_code,omitempty"`
-	Error     string            `json:"error,omitempty"`
-	CreatedAt time.Time         `json:"created_at"`
-	UpdatedAt time.Time         `json:"updated_at"`
-	Actions   []string          `json:"available_actions,omitempty"`
-	Links     taskLinks         `json:"links"`
+	ID              string            `json:"id"`
+	Kind            domain.TaskKind   `json:"kind"`
+	Adapter         string            `json:"adapter"`
+	Workspace       string            `json:"workspace,omitempty"`
+	SourceWorkspace string            `json:"source_workspace,omitempty"`
+	WorktreeRoot    string            `json:"worktree_root,omitempty"`
+	BaseRevision    string            `json:"base_revision,omitempty"`
+	Status          domain.TaskStatus `json:"status"`
+	ExitCode        *int              `json:"exit_code,omitempty"`
+	Error           string            `json:"error,omitempty"`
+	CreatedAt       time.Time         `json:"created_at"`
+	UpdatedAt       time.Time         `json:"updated_at"`
+	Actions         []string          `json:"available_actions,omitempty"`
+	Links           taskLinks         `json:"links"`
 }
 
 type taskLinks struct {
@@ -84,6 +88,7 @@ func newTaskResponse(task domain.Task, actions ...string) taskResponse {
 	base := "/api/v1/tasks/" + task.ID
 	return taskResponse{
 		ID: task.ID, Kind: task.Kind, Adapter: task.Adapter, Workspace: task.CWD,
+		SourceWorkspace: task.SourceCWD, WorktreeRoot: task.WorktreeRoot, BaseRevision: task.BaseRevision,
 		Status: task.Status, ExitCode: task.ExitCode, Error: task.Error,
 		CreatedAt: task.CreatedAt, UpdatedAt: task.UpdatedAt, Actions: actions,
 		Links: taskLinks{Self: base, Events: base + "/events", Actions: base + "/actions"},
@@ -105,6 +110,9 @@ func (r createTaskRequest) appRequest() (app.StartTaskRequest, error) {
 	if r.Kind != "" && r.Kind != inferredKind {
 		return app.StartTaskRequest{}, fmt.Errorf("kind %q does not match task input", r.Kind)
 	}
+	if r.WorkspaceMode != "" && r.WorkspaceMode != "shared" && r.WorkspaceMode != "worktree" {
+		return app.StartTaskRequest{}, errors.New("workspace_mode must be shared or worktree")
+	}
 	policy, err := r.Supervision.appPolicy()
 	if err != nil {
 		return app.StartTaskRequest{}, err
@@ -123,6 +131,7 @@ func (r createTaskRequest) appRequest() (app.StartTaskRequest, error) {
 	return app.StartTaskRequest{
 		Adapter: r.Adapter, Prompt: prompt, Command: append([]string(nil), r.Input.Command...),
 		Model: r.Model, CWD: r.Workspace, Supervision: policy, Interactive: prompt != "",
+		Worktree: r.WorkspaceMode == "worktree",
 		Verification: app.VerificationRequest{
 			Workspace: r.Verification.Workspace, Commands: commands,
 			WorkspacePolicy: verification.WorkspacePolicy{

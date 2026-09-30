@@ -19,6 +19,7 @@ export function TaskComposer({adapters, onCreated}: TaskComposerProps) {
   const [adapter, setAdapter] = useState("");
   const [kind, setKind] = useState<TaskKind>("agent");
   const [workspace, setWorkspace] = useState("");
+  const [isolatedWorktree, setIsolatedWorktree] = useState(false);
   const [prompt, setPrompt] = useState("");
   const [command, setCommand] = useState("");
   const [model, setModel] = useState("");
@@ -81,6 +82,7 @@ export function TaskComposer({adapters, onCreated}: TaskComposerProps) {
         kind,
         adapter,
         ...(workspace.trim() ? {workspace: workspace.trim()} : {}),
+        ...(isolatedWorktree ? {workspace_mode: "worktree" as const} : {}),
         input,
         ...(kind === "agent"
           ? {
@@ -205,6 +207,10 @@ export function TaskComposer({adapters, onCreated}: TaskComposerProps) {
           )}
 
           <div className="policy-row">
+            <label className="check-control">
+              <input type="checkbox" checked={isolatedWorktree} onChange={(event) => setIsolatedWorktree(event.target.checked)} />
+              <span><FolderGit2 size={16} /> 隔离 worktree</span>
+            </label>
             <label className="check-control">
               <input type="checkbox" checked={verifyWorkspace} onChange={(event) => setVerifyWorkspace(event.target.checked)} />
               <span><ShieldCheck size={16} /> 验证工作区</span>

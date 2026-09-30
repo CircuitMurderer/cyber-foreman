@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -93,6 +94,34 @@ func TestServiceDoesNotRunTestsAfterWorkspaceSafetyFailure(t *testing.T) {
 	}
 }
 
+func TestServiceRunsTaskInIsolatedWorktreeAndExposesDiff(t *testing.T) {
+	repo := appTestRepository(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	service := NewService(ctx, processadapter.NewAdapter(), event.NewBus())
+	task, err := service.StartTask(StartTaskRequest{
+		Command: helperProcessCommand(t, "write-tracked"), CWD: repo, Worktree: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	final := waitForTerminalTask(t, service, task.ID)
+	if final.Status != domain.TaskCompleted || final.WorktreeRoot == "" || final.SourceCWD == "" || final.BaseRevision == "" {
+		t.Fatalf("unexpected isolated task: %#v", final)
+	}
+	original, err := os.ReadFile(filepath.Join(repo, "tracked.txt"))
+	if err != nil || string(original) != "base\n" {
+		t.Fatalf("source workspace changed: %q err=%v", original, err)
+	}
+	diff, err := service.TaskDiff(ctx, task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(diff.Files) != 1 || diff.Files[0].Path != "tracked.txt" || !strings.Contains(diff.Patch, "isolated change") {
+		t.Fatalf("unexpected task diff: %#v\n%s", diff.Files, diff.Patch)
+	}
+}
+
 func TestServiceHelperProcess(t *testing.T) {
 	if len(os.Args) < 2 || os.Args[len(os.Args)-2] != "--" {
 		return
@@ -110,6 +139,11 @@ func TestServiceHelperProcess(t *testing.T) {
 	case "write-marker":
 		if err := os.WriteFile("verification-ran", []byte("unexpected"), 0o600); err != nil {
 			os.Exit(10)
+		}
+		os.Exit(0)
+	case "write-tracked":
+		if err := os.WriteFile("tracked.txt", []byte("isolated change\n"), 0o600); err != nil {
+			os.Exit(11)
 		}
 		os.Exit(0)
 	default:

@@ -127,14 +127,49 @@ func TestDeleteTaskRemovesCompletedTask(t *testing.T) {
 
 func TestAgentRequestIsInteractive(t *testing.T) {
 	request := createTaskRequest{
-		Adapter: "opencode", Input: taskInput{Prompt: "continue later"},
+		Adapter: "opencode", WorkspaceMode: "worktree", Input: taskInput{Prompt: "continue later"},
 	}
 	converted, err := request.appRequest()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !converted.Interactive {
-		t.Fatal("REST agent task was not marked interactive")
+	if !converted.Interactive || !converted.Worktree {
+		t.Fatalf("REST agent task flags: interactive=%v worktree=%v", converted.Interactive, converted.Worktree)
+	}
+}
+
+func TestCreateTaskRejectsUnknownWorkspaceMode(t *testing.T) {
+	_, err := (createTaskRequest{
+		Adapter: "opencode", WorkspaceMode: "container", Input: taskInput{Prompt: "test"},
+	}).appRequest()
+	if err == nil || !strings.Contains(err.Error(), "workspace_mode") {
+		t.Fatalf("error=%v, want workspace_mode validation", err)
+	}
+}
+
+func TestTaskResponseIncludesWorktreeMetadata(t *testing.T) {
+	response := newTaskResponse(domain.Task{
+		ID: "task-isolated", Kind: domain.TaskKindAgent, Adapter: "opencode",
+		CWD: "/git/.git/foreman-worktrees/task-isolated/subdir", SourceCWD: "/git/subdir",
+		WorktreeRoot: "/git/.git/foreman-worktrees/task-isolated", BaseRevision: "deadbeef",
+	})
+	if response.SourceWorkspace != "/git/subdir" || response.WorktreeRoot == "" || response.BaseRevision != "deadbeef" {
+		t.Fatalf("unexpected response: %#v", response)
+	}
+}
+
+func TestTaskDiffRejectsSharedWorkspace(t *testing.T) {
+	service, bus := newAPITestService(t)
+	task, err := service.StartTask(app.StartTaskRequest{Command: []string{"ignored"}, CWD: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest(http.MethodGet, "/api/v1/tasks/"+task.ID+"/diff", nil)
+	request.SetPathValue("id", task.ID)
+	recorder := httptest.NewRecorder()
+	NewServer(service, bus).Handler().ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusConflict || !strings.Contains(recorder.Body.String(), "diff_unavailable") {
+		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
 	}
 }
 

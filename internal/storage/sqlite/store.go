@@ -15,7 +15,7 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-const schemaVersion = 1
+const schemaVersion = 2
 
 type Store struct {
 	db   *sql.DB
@@ -91,6 +91,9 @@ func (s *Store) migrate() error {
 			adapter TEXT NOT NULL,
 			command_json BLOB NOT NULL,
 			cwd TEXT NOT NULL,
+			source_cwd TEXT NOT NULL DEFAULT '',
+			worktree_root TEXT NOT NULL DEFAULT '',
+			base_revision TEXT NOT NULL DEFAULT '',
 			status TEXT NOT NULL,
 			exit_code INTEGER,
 			error TEXT NOT NULL,
@@ -114,6 +117,9 @@ func (s *Store) migrate() error {
 			return fmt.Errorf("apply sqlite schema: %w", err)
 		}
 	}
+	if err := ensureTaskColumns(tx); err != nil {
+		return err
+	}
 	if _, err := tx.Exec(
 		`INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (?, ?)`,
 		schemaVersion, encodeTime(time.Now().UTC()),
@@ -136,13 +142,16 @@ func (s *Store) PutTask(task domain.Task) error {
 		exitCode = *task.ExitCode
 	}
 	_, err = s.db.Exec(`INSERT INTO tasks (
-		id, kind, adapter, command_json, cwd, status, exit_code, error, created_at, updated_at
-	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		id, kind, adapter, command_json, cwd, source_cwd, worktree_root, base_revision,
+		status, exit_code, error, created_at, updated_at
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	ON CONFLICT(id) DO UPDATE SET
 		kind=excluded.kind, adapter=excluded.adapter, command_json=excluded.command_json,
-		cwd=excluded.cwd, status=excluded.status, exit_code=excluded.exit_code,
+		cwd=excluded.cwd, source_cwd=excluded.source_cwd, worktree_root=excluded.worktree_root,
+		base_revision=excluded.base_revision, status=excluded.status, exit_code=excluded.exit_code,
 		error=excluded.error, created_at=excluded.created_at, updated_at=excluded.updated_at`,
-		task.ID, task.Kind, task.Adapter, command, task.CWD, task.Status, exitCode, task.Error,
+		task.ID, task.Kind, task.Adapter, command, task.CWD, task.SourceCWD, task.WorktreeRoot,
+		task.BaseRevision, task.Status, exitCode, task.Error,
 		encodeTime(task.CreatedAt), encodeTime(task.UpdatedAt),
 	)
 	if err != nil {
@@ -170,7 +179,8 @@ func (s *Store) DeleteTask(id string) error {
 }
 
 func (s *Store) ListTasks() ([]domain.Task, error) {
-	rows, err := s.db.Query(`SELECT id, kind, adapter, command_json, cwd, status,
+	rows, err := s.db.Query(`SELECT id, kind, adapter, command_json, cwd, source_cwd, worktree_root,
+		base_revision, status,
 		exit_code, error, created_at, updated_at FROM tasks ORDER BY created_at DESC`)
 	if err != nil {
 		return nil, fmt.Errorf("list tasks: %w", err)
@@ -182,7 +192,8 @@ func (s *Store) ListTasks() ([]domain.Task, error) {
 		var command []byte
 		var exitCode sql.NullInt64
 		var createdAt, updatedAt string
-		if err := rows.Scan(&task.ID, &task.Kind, &task.Adapter, &command, &task.CWD, &task.Status,
+		if err := rows.Scan(&task.ID, &task.Kind, &task.Adapter, &command, &task.CWD,
+			&task.SourceCWD, &task.WorktreeRoot, &task.BaseRevision, &task.Status,
 			&exitCode, &task.Error, &createdAt, &updatedAt); err != nil {
 			return nil, fmt.Errorf("scan task: %w", err)
 		}
@@ -205,6 +216,37 @@ func (s *Store) ListTasks() ([]domain.Task, error) {
 		return nil, fmt.Errorf("iterate tasks: %w", err)
 	}
 	return tasks, nil
+}
+
+func ensureTaskColumns(tx *sql.Tx) error {
+	rows, err := tx.Query(`PRAGMA table_info(tasks)`)
+	if err != nil {
+		return fmt.Errorf("inspect task schema: %w", err)
+	}
+	existing := make(map[string]bool)
+	for rows.Next() {
+		var cid int
+		var name, columnType string
+		var notNull, primaryKey int
+		var defaultValue any
+		if err := rows.Scan(&cid, &name, &columnType, &notNull, &defaultValue, &primaryKey); err != nil {
+			_ = rows.Close()
+			return fmt.Errorf("scan task schema: %w", err)
+		}
+		existing[name] = true
+	}
+	if err := rows.Close(); err != nil {
+		return err
+	}
+	for _, column := range []string{"source_cwd", "worktree_root", "base_revision"} {
+		if existing[column] {
+			continue
+		}
+		if _, err := tx.Exec(`ALTER TABLE tasks ADD COLUMN ` + column + ` TEXT NOT NULL DEFAULT ''`); err != nil {
+			return fmt.Errorf("add tasks.%s: %w", column, err)
+		}
+	}
+	return nil
 }
 
 func (s *Store) AppendEvent(event domain.Event) (domain.Event, error) {

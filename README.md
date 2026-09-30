@@ -13,6 +13,7 @@
 - React、TypeScript、HeroUI v3 Web 控制台
 - 对话记录弹窗与 Agent 流式 chunk 完整回复聚合
 - 同一 ACP session 的多轮继续对话、任务总结与历史删除
+- 可选 Git worktree 隔离、任务 diff 展示与审查反馈闭环
 - Go 1.26.8、Node.js 22.18 与 pnpm 用户级工具链
 - 通用 ACP v1 Adapter、启动健康探测与 OpenCode/Grok Build preset
 - Codex App Server Adapter，支持共享登录态或 Responses、Chat Completions、Anthropic Messages API
@@ -318,6 +319,22 @@ curl -X POST http://127.0.0.1:8090/api/v1/tasks \
   -d '{"adapter":"process","input":{"command":["sh","-c","echo hello; sleep 1; echo finished"]}}'
 ```
 
+让 Agent 在独立 Git worktree 中执行，避免直接修改当前 checkout：
+
+```bash
+curl -X POST http://127.0.0.1:8090/api/v1/tasks \
+  -H 'Content-Type: application/json' \
+  -d '{"adapter":"opencode","workspace":"/path/to/repo","workspace_mode":"worktree","input":{"prompt":"实现需求并运行测试"}}'
+```
+
+源仓库必须处于 clean 状态。Foreman 从当前 `HEAD` 创建 detached worktree，并在任务响应中返回 `source_workspace`、`worktree_root` 和 `base_revision`。查看任务变更：
+
+```bash
+curl http://127.0.0.1:8090/api/v1/tasks/TASK_ID/diff
+```
+
+Web 控制台的“任务变更”弹窗会展示完整 patch；任务等待输入时，可直接把审查反馈送回同一 Agent session。敏感文件内容会被隐藏，patch 最大返回 1 MiB。删除任务不会删除隔离 worktree，确认框会显示保留路径，避免未提交成果丢失。
+
 查看 Adapter、任务和可重连事件流：
 
 ```bash
@@ -353,14 +370,14 @@ internal/event/          实时事件总线
 internal/storage/        持久化边界与 SQLite 实现
 internal/supervisor/     监督与纠偏规则
 internal/task/           状态机
+internal/worktree/       Git worktree 隔离与安全 diff
 internal/api/            HTTP/SSE 控制面
 web/                     React/HeroUI 控制台
 ```
 
 ## 下一步
 
-1. 增加 worktree 隔离、任务 diff 和代码审查反馈闭环。
-2. 增加 Provider Profile、认证、工作目录白名单和命令权限策略。
-3. 接入内网本地模型，作为低于确定性规则优先级的建议决策器。
+1. 增加 Provider Profile、认证、工作目录白名单和命令权限策略。
+2. 接入内网本地模型，作为低于确定性规则优先级的建议决策器。
 
 > 当前 HTTP API 可以启动任意本地命令，因此默认只监听 `127.0.0.1`，不要直接暴露到局域网。

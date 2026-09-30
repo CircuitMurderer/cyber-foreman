@@ -1,6 +1,7 @@
 package sqlite
 
 import (
+	"database/sql"
 	"path/filepath"
 	"testing"
 	"time"
@@ -19,7 +20,8 @@ func TestStoreRoundTripsTasksAndTypedEvents(t *testing.T) {
 	exitCode := 7
 	task := domain.Task{
 		ID: "task-1", Kind: domain.TaskKindAgent, Adapter: "opencode",
-		Command: []string{"one", "two"}, CWD: "/workspace", Status: domain.TaskFailed,
+		Command: []string{"one", "two"}, CWD: "/worktree", SourceCWD: "/source",
+		WorktreeRoot: "/worktree", BaseRevision: "abc123", Status: domain.TaskFailed,
 		ExitCode: &exitCode, Error: "failed", CreatedAt: now, UpdatedAt: now.Add(time.Second),
 	}
 	if err := store.PutTask(task); err != nil {
@@ -30,7 +32,8 @@ func TestStoreRoundTripsTasksAndTypedEvents(t *testing.T) {
 		t.Fatal(err)
 	}
 	if len(tasks) != 1 || tasks[0].ID != task.ID || tasks[0].ExitCode == nil || *tasks[0].ExitCode != exitCode ||
-		len(tasks[0].Command) != 2 || !tasks[0].UpdatedAt.Equal(task.UpdatedAt) {
+		len(tasks[0].Command) != 2 || tasks[0].SourceCWD != "/source" || tasks[0].BaseRevision != "abc123" ||
+		!tasks[0].UpdatedAt.Equal(task.UpdatedAt) {
 		t.Fatalf("unexpected tasks: %#v", tasks)
 	}
 
@@ -57,6 +60,43 @@ func TestStoreRoundTripsTasksAndTypedEvents(t *testing.T) {
 	message, ok := events[0].Data.(domain.ConversationMessageData)
 	if !ok || message.Text != "hello" || message.Source != "operator" {
 		t.Fatalf("unexpected typed data: %#v", events[0].Data)
+	}
+}
+
+func TestStoreMigratesLegacyTaskColumns(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "legacy.db")
+	db, err := sql.Open("sqlite", "file:"+filepath.ToSlash(path))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = db.Exec(`CREATE TABLE tasks (
+		id TEXT PRIMARY KEY, kind TEXT NOT NULL, adapter TEXT NOT NULL,
+		command_json BLOB NOT NULL, cwd TEXT NOT NULL, status TEXT NOT NULL,
+		exit_code INTEGER, error TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+	)`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	store, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	now := time.Now().UTC()
+	task := domain.Task{
+		ID: "task-migrated", Kind: domain.TaskKindAgent, Adapter: "opencode",
+		CWD: "/worktree", SourceCWD: "/source", WorktreeRoot: "/worktree", BaseRevision: "deadbeef",
+		Status: domain.TaskCompleted, CreatedAt: now, UpdatedAt: now,
+	}
+	if err := store.PutTask(task); err != nil {
+		t.Fatal(err)
+	}
+	tasks, err := store.ListTasks()
+	if err != nil || len(tasks) != 1 || tasks[0].WorktreeRoot != "/worktree" || tasks[0].BaseRevision != "deadbeef" {
+		t.Fatalf("tasks=%#v err=%v", tasks, err)
 	}
 }
 

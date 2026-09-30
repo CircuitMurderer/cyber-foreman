@@ -30,16 +30,19 @@ func (s TaskStatus) Terminal() bool {
 }
 
 type Task struct {
-	ID        string     `json:"id"`
-	Kind      TaskKind   `json:"kind"`
-	Adapter   string     `json:"adapter"`
-	Command   []string   `json:"command"`
-	CWD       string     `json:"cwd,omitempty"`
-	Status    TaskStatus `json:"status"`
-	ExitCode  *int       `json:"exit_code,omitempty"`
-	Error     string     `json:"error,omitempty"`
-	CreatedAt time.Time  `json:"created_at"`
-	UpdatedAt time.Time  `json:"updated_at"`
+	ID           string     `json:"id"`
+	Kind         TaskKind   `json:"kind"`
+	Adapter      string     `json:"adapter"`
+	Command      []string   `json:"command"`
+	CWD          string     `json:"cwd,omitempty"`
+	SourceCWD    string     `json:"source_cwd,omitempty"`
+	WorktreeRoot string     `json:"worktree_root,omitempty"`
+	BaseRevision string     `json:"base_revision,omitempty"`
+	Status       TaskStatus `json:"status"`
+	ExitCode     *int       `json:"exit_code,omitempty"`
+	Error        string     `json:"error,omitempty"`
+	CreatedAt    time.Time  `json:"created_at"`
+	UpdatedAt    time.Time  `json:"updated_at"`
 }
 
 type EventType string
@@ -47,6 +50,7 @@ type EventType string
 const (
 	EventTaskCreated         EventType = "task.created"
 	EventTaskState           EventType = "task.state"
+	EventTaskWorkspace       EventType = "task.workspace_prepared"
 	EventAgentStarted        EventType = "agent.started"
 	EventAgentOutput         EventType = "agent.output"
 	EventAgentError          EventType = "agent.error"

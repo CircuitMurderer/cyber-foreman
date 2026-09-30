@@ -18,6 +18,7 @@ import (
 	"cyber-foreman/internal/supervisor"
 	"cyber-foreman/internal/task"
 	"cyber-foreman/internal/verification"
+	"cyber-foreman/internal/worktree"
 )
 
 var (
@@ -26,6 +27,7 @@ var (
 	ErrTaskNotRunning    = errors.New("task is not running")
 	ErrActionUnavailable = errors.New("task action is unavailable")
 	ErrTaskNotDeletable  = errors.New("running task must be stopped before deletion")
+	ErrDiffUnavailable   = errors.New("task does not use an isolated worktree")
 )
 
 type StartTaskRequest struct {
@@ -35,6 +37,7 @@ type StartTaskRequest struct {
 	Model         string              `json:"model,omitempty"`
 	InterruptWith string              `json:"interrupt_with,omitempty"`
 	Interactive   bool                `json:"interactive,omitempty"`
+	Worktree      bool                `json:"worktree,omitempty"`
 	CWD           string              `json:"cwd,omitempty"`
 	Verification  VerificationRequest `json:"verification,omitempty"`
 	Supervision   *supervisor.Policy  `json:"supervision,omitempty"`
@@ -254,6 +257,22 @@ func (s *Service) startQueuedTask(taskID string, req StartTaskRequest, adapter a
 	if t.Status != domain.TaskQueued {
 		return ErrTaskNotRunning
 	}
+	if req.Worktree {
+		prepared, prepareErr := worktree.Prepare(s.ctx, t.CWD, t.ID)
+		if prepareErr != nil {
+			wrapped := fmt.Errorf("prepare isolated worktree: %w", prepareErr)
+			_ = s.fail(t.ID, -1, wrapped.Error())
+			return wrapped
+		}
+		if err := s.setTaskWorktree(t.ID, prepared); err != nil {
+			_ = s.fail(t.ID, -1, err.Error())
+			return err
+		}
+		t, err = s.GetTask(taskID)
+		if err != nil {
+			return err
+		}
+	}
 	var baseline *verification.WorkspaceBaseline
 	if req.Verification.Workspace {
 		captured, err := (verification.WorkspaceVerifier{}).Capture(s.ctx, t.CWD, req.Verification.WorkspacePolicy)
@@ -330,6 +349,17 @@ func (s *Service) startQueuedTask(taskID string, req StartTaskRequest, adapter a
 }
 
 func (s *Service) ListAdapters() []agent.Descriptor { return s.adapters.List() }
+
+func (s *Service) TaskDiff(ctx context.Context, id string) (worktree.Diff, error) {
+	task, err := s.GetTask(id)
+	if err != nil {
+		return worktree.Diff{}, err
+	}
+	if task.WorktreeRoot == "" {
+		return worktree.Diff{}, ErrDiffUnavailable
+	}
+	return worktree.ReadDiff(ctx, task.WorktreeRoot, task.BaseRevision)
+}
 
 func (s *Service) GetTask(id string) (domain.Task, error) {
 	s.mu.RLock()
@@ -768,6 +798,36 @@ func (s *Service) transition(id string, to domain.TaskStatus, reason string) err
 		return err
 	}
 	return nil
+}
+
+func (s *Service) setTaskWorktree(id string, prepared worktree.Prepared) error {
+	s.mu.Lock()
+	t, ok := s.tasks[id]
+	if !ok {
+		s.mu.Unlock()
+		return ErrTaskNotFound
+	}
+	updated := cloneTask(t)
+	updated.SourceCWD = prepared.SourceCWD
+	updated.WorktreeRoot = prepared.Root
+	updated.CWD = prepared.CWD
+	updated.BaseRevision = prepared.BaseRevision
+	updated.UpdatedAt = time.Now().UTC()
+	if s.store != nil {
+		if err := s.store.PutTask(updated); err != nil {
+			s.mu.Unlock()
+			return err
+		}
+	}
+	*t = updated
+	s.mu.Unlock()
+	return s.bus.PublishChecked(domain.Event{
+		TaskID: id, Type: domain.EventTaskWorkspace, Timestamp: updated.UpdatedAt,
+		Data: map[string]string{
+			"source_workspace": prepared.SourceCWD, "source_root": prepared.SourceRoot, "worktree": prepared.Root,
+			"workspace": prepared.CWD, "base_revision": prepared.BaseRevision,
+		},
+	})
 }
 
 func newTaskID() string {

@@ -46,6 +46,9 @@ export interface Task {
   kind: TaskKind;
   adapter: string;
   workspace?: string;
+  source_workspace?: string;
+  worktree_root?: string;
+  base_revision?: string;
   status: TaskStatus;
   exit_code?: number;
   error?: string;
@@ -66,10 +69,24 @@ export interface ForemanEvent {
   data?: unknown;
 }
 
+export interface TaskDiffFile {
+  status: string;
+  path: string;
+  redacted?: boolean;
+}
+
+export interface TaskDiff {
+  base_revision: string;
+  files: TaskDiffFile[];
+  patch: string;
+  truncated: boolean;
+}
+
 export interface CreateTaskRequest {
   kind: TaskKind;
   adapter: string;
   workspace?: string;
+  workspace_mode?: "shared" | "worktree";
   input: {prompt?: string; command?: string[]};
   model?: string;
   supervision?: {
@@ -139,6 +156,10 @@ export async function getTasks(): Promise<Task[]> {
 
 export function getTask(id: string): Promise<Task> {
   return request<Task>(`/api/v1/tasks/${encodeURIComponent(id)}`);
+}
+
+export function getTaskDiff(id: string): Promise<TaskDiff> {
+  return request<TaskDiff>(`/api/v1/tasks/${encodeURIComponent(id)}/diff`);
 }
 
 export function createTask(payload: CreateTaskRequest): Promise<Task> {

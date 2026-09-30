@@ -336,6 +336,19 @@ select.control { appearance: auto; }
 .summary-checks .passed strong { color: var(--success); }
 .summary-checks .failed strong { color: var(--danger); }
 .summary-tools { display: grid; gap: 7px; margin: 0; padding: 12px 13px 13px 29px; color: var(--muted-strong); font-size: 10px; }
+.diff-dialog { width: min(1080px, calc(100vw - 32px)); height: min(860px, calc(100vh - 48px)); }
+.diff-body { display: grid; grid-template-rows: auto minmax(220px, 1fr) auto; gap: 12px; padding-top: 14px !important; }
+.diff-files { padding: 12px; border: 1px solid var(--line); border-radius: 11px; background: var(--panel); }
+.diff-files > div { display: flex; align-items: center; gap: 8px; color: var(--text-strong); }
+.diff-files > span { display: block; margin-top: 9px; color: var(--muted); font-size: 10px; }
+.diff-files ul { display: grid; gap: 5px; max-height: 130px; margin: 10px 0 0; padding: 0; overflow: auto; list-style: none; }
+.diff-files li { display: grid; grid-template-columns: 28px minmax(0, 1fr) auto; gap: 8px; align-items: center; color: var(--muted-strong); font-size: 10px; }
+.diff-files li code { color: var(--accent); }
+.diff-files li small { color: var(--warning); }
+.diff-patch { min-height: 240px; margin: 0; padding: 14px; overflow: auto; border: 1px solid var(--line); border-radius: 11px; color: var(--text); background: var(--panel-solid); font: 10px/1.6 var(--mono); white-space: pre; }
+.diff-empty { display: grid; place-items: center; min-height: 260px; color: var(--muted); }
+.review-feedback { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; align-items: end; padding: 12px; border: 1px solid var(--line); border-radius: 11px; background: var(--panel); }
+.review-feedback strong { grid-column: 1 / -1; color: var(--text-strong); font-size: 11px; }
 
 .timeline-heading { display: flex; align-items: center; justify-content: space-between; padding: 4px 3px 11px; }
 .timeline-heading > div { gap: 7px; font-size: 12px; }
@@ -381,6 +394,8 @@ select.control { appearance: auto; }
   .detail-side { gap: 8px; }
   .conversation-dialog { width: calc(100vw - 20px); height: calc(100vh - 20px); }
   .summary-dialog { width: calc(100vw - 20px); max-height: calc(100vh - 20px); }
+  .diff-dialog { width: calc(100vw - 20px); height: calc(100vh - 20px); }
+  .review-feedback { grid-template-columns: 1fr; }
   .summary-status dl { grid-template-columns: 1fr 1fr; }
   .interrupt-row { grid-template-columns: 1fr; }
   .interrupt-row button { width: 100%; }

@@ -30,6 +30,7 @@ import {absoluteTime, shortID, statusLabel, statusTone} from "../status";
 import {useTaskEvents, type StreamState} from "../useTaskEvents";
 import {ConversationModal} from "./ConversationModal";
 import {TaskSummaryModal} from "./TaskSummaryModal";
+import {TaskDiffModal} from "./TaskDiffModal";
 
 interface TaskDetailProps {
   task?: Task;
@@ -138,6 +139,7 @@ export function TaskDetail({task, onChanged}: TaskDetailProps) {
             <StreamIndicator state={streamState} />
           </div>
           <div className="detail-actions">
+            {task.worktree_root && <TaskDiffModal task={task} onChanged={onChanged} />}
             <TaskSummaryModal task={task} events={events} />
             {task.kind === "agent" && <ConversationModal task={task} events={events} />}
           </div>
