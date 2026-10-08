@@ -271,7 +271,7 @@ func serve(ctx context.Context, args []string) error {
 			reviewer, reviewerErr := supervisor.NewOpenAIReviewer(supervisor.OpenAIReviewerConfig{
 				BaseURL: reviewConfig.BaseURL, APIKey: apiKey, Model: reviewConfig.Model,
 				Timeout: reviewConfig.TimeoutDuration(), ToolCalling: reviewConfig.ToolCalling,
-				AllowWorkspaceDiff: reviewConfig.AllowWorkspaceDiff,
+				AllowWorkspaceDiff: reviewConfig.AllowWorkspaceDiff, AllowAttention: reviewConfig.AllowAttention,
 			})
 			if reviewerErr != nil {
 				return fmt.Errorf("configure semantic reviewer: %w", reviewerErr)

@@ -51,6 +51,7 @@ type SemanticReviewConfig struct {
 	Timeout            string `json:"timeout,omitempty"`
 	ToolCalling        bool   `json:"tool_calling,omitempty"`
 	AllowWorkspaceDiff bool   `json:"allow_workspace_diff,omitempty"`
+	AllowAttention     bool   `json:"allow_operator_attention,omitempty"`
 }
 
 type Profile struct {

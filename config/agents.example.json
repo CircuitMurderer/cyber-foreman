@@ -62,7 +62,8 @@
       "model": "qwen3.8",
 	  "timeout": "20s",
 	  "tool_calling": true,
-	  "allow_workspace_diff": false
+	  "allow_workspace_diff": false,
+	  "allow_operator_attention": false
     }
   }
 }

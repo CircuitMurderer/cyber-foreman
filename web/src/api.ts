@@ -101,6 +101,7 @@ export interface CreateTaskRequest {
     max_retries?: number;
     max_test_repairs?: number;
     max_semantic_redirects?: number;
+		max_semantic_escalations?: number;
   };
   verification?: {
     workspace?: boolean;

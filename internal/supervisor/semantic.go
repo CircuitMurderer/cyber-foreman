@@ -11,6 +11,7 @@ const (
 	SemanticPass      SemanticVerdict = "pass"
 	SemanticRedirect  SemanticVerdict = "redirect"
 	SemanticUncertain SemanticVerdict = "uncertain"
+	SemanticAttention SemanticVerdict = "attention"
 )
 
 type SemanticReviewRequest struct {
@@ -39,6 +40,7 @@ type SemanticReviewerDescriptor struct {
 	Model              string `json:"model"`
 	ToolCalling        bool   `json:"tool_calling,omitempty"`
 	AllowWorkspaceDiff bool   `json:"allow_workspace_diff,omitempty"`
+	AllowAttention     bool   `json:"allow_operator_attention,omitempty"`
 }
 
 type SemanticTool string
@@ -46,6 +48,7 @@ type SemanticTool string
 const (
 	SemanticToolInspectTask           SemanticTool = "inspect_task_state"
 	SemanticToolInspectRecentActivity SemanticTool = "inspect_recent_activity"
+	SemanticToolInspectAgentActivity  SemanticTool = "inspect_agent_activity"
 	SemanticToolInspectWorkspaceDiff  SemanticTool = "inspect_workspace_diff"
 )
 

@@ -167,6 +167,46 @@ func TestOpenAIReviewerRejectsAmbiguousTerminalToolCalls(t *testing.T) {
 	}
 }
 
+func TestOpenAIReviewerAllowsExplicitOperatorAttentionTool(t *testing.T) {
+	client := &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		var payload struct {
+			Tools []struct {
+				Function struct {
+					Name string `json:"name"`
+				} `json:"function"`
+			} `json:"tools"`
+		}
+		if err := json.NewDecoder(request.Body).Decode(&payload); err != nil {
+			t.Fatal(err)
+		}
+		found := false
+		for _, tool := range payload.Tools {
+			found = found || tool.Function.Name == "request_operator_attention"
+		}
+		if !found {
+			t.Fatal("operator attention tool was not advertised after explicit opt-in")
+		}
+		body := `{"choices":[{"message":{"tool_calls":[{"id":"attention","type":"function","function":{"name":"request_operator_attention","arguments":"{\"reason\":\"migration target is ambiguous\"}"}}]}}]}`
+		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(body))}, nil
+	})}
+	reviewer, err := NewOpenAIReviewer(OpenAIReviewerConfig{
+		BaseURL: "https://example.test/v1", Model: "model", Client: client,
+		ToolCalling: true, AllowAttention: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	review, err := reviewer.Review(context.Background(), SemanticReviewRequest{
+		AgentResponse: "done", Toolbox: &fakeSemanticToolbox{},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if review.Verdict != SemanticAttention || review.ToolCall != "request_operator_attention" {
+		t.Fatalf("review=%#v", review)
+	}
+}
+
 type fakeSemanticToolbox struct {
 	calls int
 }

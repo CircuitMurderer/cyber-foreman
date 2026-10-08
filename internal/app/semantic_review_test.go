@@ -70,3 +70,39 @@ func TestSemanticToolboxKeepsWorkspaceDiffOptIn(t *testing.T) {
 		t.Fatal("workspace diff tool executed without explicit opt-in")
 	}
 }
+
+func TestSemanticToolboxSummarizesAgentToolsWithoutArgumentsOrOutput(t *testing.T) {
+	bus := event.NewBus()
+	task := &domain.Task{ID: "task-1", Kind: domain.TaskKindAgent, Status: domain.TaskVerifying}
+	service := &Service{bus: bus, tasks: map[string]*domain.Task{task.ID: task}}
+	bus.Publish(domain.Event{
+		TaskID: task.ID, Type: domain.EventAgentSessionUpdate, Timestamp: time.Now().UTC(),
+		Data: domain.AgentSessionUpdateData{Update: json.RawMessage(`{
+			"sessionUpdate":"tool_call_update",
+			"title":"Run tests",
+			"kind":"execute",
+			"status":"completed",
+			"rawInput":{"command":"printenv SECRET"},
+			"rawOutput":"SECRET=do-not-send"
+		}`)},
+	})
+	bus.Publish(domain.Event{
+		TaskID: task.ID, Type: domain.EventAgentPermission, Timestamp: time.Now().UTC(),
+		Data: domain.AgentPermissionData{Options: []domain.PermissionOptionData{{ID: "allow", Name: "Allow", Kind: "allow_once"}}},
+	})
+	toolbox := &semanticToolbox{service: service, taskID: task.ID}
+	result, err := toolbox.ExecuteSemanticTool(context.Background(), supervisor.SemanticToolInspectAgentActivity, json.RawMessage(`{"limit":10}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, secret := range []string{"printenv", "SECRET", "do-not-send", "allow_once"} {
+		if strings.Contains(result, secret) {
+			t.Fatalf("agent activity leaked %q: %s", secret, result)
+		}
+	}
+	for _, expected := range []string{"execute", "completed", "permission_requested"} {
+		if !strings.Contains(result, expected) {
+			t.Fatalf("agent activity omitted %q: %s", expected, result)
+		}
+	}
+}

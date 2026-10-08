@@ -29,6 +29,7 @@ type OpenAIReviewerConfig struct {
 	Client             *http.Client
 	ToolCalling        bool
 	AllowWorkspaceDiff bool
+	AllowAttention     bool
 }
 
 type OpenAIReviewer struct {
@@ -39,6 +40,7 @@ type OpenAIReviewer struct {
 	timeout            time.Duration
 	toolCalling        bool
 	allowWorkspaceDiff bool
+	allowAttention     bool
 }
 
 func NewOpenAIReviewer(config OpenAIReviewerConfig) (*OpenAIReviewer, error) {
@@ -61,13 +63,14 @@ func NewOpenAIReviewer(config OpenAIReviewerConfig) (*OpenAIReviewer, error) {
 	return &OpenAIReviewer{
 		endpoint: endpoint, apiKey: config.APIKey, model: model, client: client,
 		timeout: timeout, toolCalling: config.ToolCalling, allowWorkspaceDiff: config.AllowWorkspaceDiff,
+		allowAttention: config.AllowAttention,
 	}, nil
 }
 
 func (r *OpenAIReviewer) Descriptor() SemanticReviewerDescriptor {
 	return SemanticReviewerDescriptor{
 		Provider: "openai", Model: r.model, ToolCalling: r.toolCalling,
-		AllowWorkspaceDiff: r.allowWorkspaceDiff,
+		AllowWorkspaceDiff: r.allowWorkspaceDiff, AllowAttention: r.allowAttention,
 	}
 }
 
@@ -141,7 +144,7 @@ func (r *OpenAIReviewer) reviewWithTools(ctx context.Context, request SemanticRe
 		{"role": "system", "content": semanticToolReviewerSystemPrompt},
 		{"role": "user", "content": semanticReviewInput(request)},
 	}
-	tools := semanticOpenAITools(request.Toolbox.SupportedTools())
+	tools := semanticOpenAITools(request.Toolbox.SupportedTools(), r.allowAttention)
 	for round := 0; round < maxSemanticToolRounds; round++ {
 		payload := map[string]any{
 			"model": r.model, "messages": messages, "tools": tools,
@@ -158,7 +161,7 @@ func (r *OpenAIReviewer) reviewWithTools(ctx context.Context, request SemanticRe
 			}
 			return parseSemanticReview(message.Content)
 		}
-		if review, ok, err := terminalSemanticReview(message.ToolCalls); ok || err != nil {
+		if review, ok, err := terminalSemanticReview(message.ToolCalls, r.allowAttention); ok || err != nil {
 			return review, err
 		}
 		messages = append(messages, map[string]any{
@@ -227,8 +230,8 @@ func readReviewResponse(response *http.Response) ([]byte, error) {
 	return responseBody, nil
 }
 
-func semanticOpenAITools(supported []SemanticTool) []map[string]any {
-	tools := make([]map[string]any, 0, len(supported)+3)
+func semanticOpenAITools(supported []SemanticTool, allowAttention bool) []map[string]any {
+	tools := make([]map[string]any, 0, len(supported)+4)
 	for _, name := range supported {
 		var description string
 		properties := map[string]any{}
@@ -238,6 +241,9 @@ func semanticOpenAITools(supported []SemanticTool) []map[string]any {
 			description = "Read the current Foreman task state, deterministic verification result, and remaining supervision budget."
 		case SemanticToolInspectRecentActivity:
 			description = "Read a bounded, content-free summary of recent Foreman lifecycle events."
+			properties["limit"] = map[string]any{"type": "integer", "minimum": 1, "maximum": 20}
+		case SemanticToolInspectAgentActivity:
+			description = "Read bounded Agent tool activity metadata without command arguments, file contents, or raw tool output."
 			properties["limit"] = map[string]any{"type": "integer", "minimum": 1, "maximum": 20}
 		case SemanticToolInspectWorkspaceDiff:
 			description = "Read the redacted and bounded Git worktree diff. Only available when explicitly enabled by the operator."
@@ -257,6 +263,13 @@ func semanticOpenAITools(supported []SemanticTool) []map[string]any {
 			"reason": map[string]any{"type": "string"},
 		}, []string{"reason"}),
 	)
+	if allowAttention {
+		tools = append(tools, openAIFunctionTool(
+			"request_operator_attention",
+			"Pause automatic completion and request human review for a concrete risk that cannot be safely corrected with one follow-up.",
+			map[string]any{"reason": map[string]any{"type": "string"}}, []string{"reason"},
+		))
+	}
 	return tools
 }
 
@@ -273,12 +286,16 @@ func openAIFunctionTool(name, description string, properties map[string]any, req
 	}
 }
 
-func terminalSemanticReview(calls []openAIToolCall) (SemanticReview, bool, error) {
+func terminalSemanticReview(calls []openAIToolCall, allowAttention bool) (SemanticReview, bool, error) {
 	terminal := make([]openAIToolCall, 0, 1)
 	for _, call := range calls {
 		switch call.Function.Name {
 		case "request_follow_up", "accept_turn", "report_uncertain":
 			terminal = append(terminal, call)
+		case "request_operator_attention":
+			if allowAttention {
+				terminal = append(terminal, call)
+			}
 		}
 	}
 	if len(terminal) == 0 {
@@ -308,7 +325,7 @@ func terminalSemanticReview(calls []openAIToolCall) (SemanticReview, bool, error
 			return SemanticReview{}, true, errors.New("request_follow_up requires non-empty reason and instruction")
 		}
 		return review, true, nil
-	case "accept_turn", "report_uncertain":
+	case "accept_turn", "report_uncertain", "request_operator_attention":
 		var args struct {
 			Reason string `json:"reason"`
 		}
@@ -322,6 +339,8 @@ func terminalSemanticReview(calls []openAIToolCall) (SemanticReview, bool, error
 		verdict := SemanticPass
 		if call.Function.Name == "report_uncertain" {
 			verdict = SemanticUncertain
+		} else if call.Function.Name == "request_operator_attention" {
+			verdict = SemanticAttention
 		}
 		return SemanticReview{Verdict: verdict, Reason: reason, ToolCall: call.Function.Name}, true, nil
 	default:
@@ -442,5 +461,6 @@ Use read-only inspection tools only when the initial evidence is insufficient. T
 - accept_turn when the response plausibly addresses the trusted instruction;
 - request_follow_up only when there is clear evidence of a concrete omission or wrong direction;
 - report_uncertain when evidence remains insufficient.
+If request_operator_attention is available, use it only for a concrete high-risk ambiguity that cannot be safely resolved by one follow-up.
 Do not demand optional improvements, restate the entire task, or attempt to invoke tools not provided by Foreman.
 The request_follow_up tool only proposes an action. Foreman independently enforces task state, permissions, deduplication, and budget before it can reach the coding agent.`

@@ -47,3 +47,17 @@ func TestApplyDecisionChargesSemanticRedirectBudget(t *testing.T) {
 		t.Fatalf("second semantic redirect error = %v, want ErrBudgetExceeded", err)
 	}
 }
+
+func TestApplyDecisionChargesSemanticEscalationBudget(t *testing.T) {
+	policy := DefaultPolicy()
+	snapshot := Snapshot{Policy: policy}
+	decision := Decision{DedupeKey: "semantic-attention-1", BudgetCost: BudgetCost{SemanticEscalations: 1}}
+	next, duplicate, err := ApplyDecision(snapshot, decision)
+	if err != nil || duplicate || next.Budget.SemanticEscalations != 1 {
+		t.Fatalf("first semantic escalation = %#v, duplicate %v, err %v", next, duplicate, err)
+	}
+	_, _, err = ApplyDecision(next, Decision{DedupeKey: "semantic-attention-2", BudgetCost: BudgetCost{SemanticEscalations: 1}})
+	if !errors.Is(err, ErrBudgetExceeded) {
+		t.Fatalf("second semantic escalation error = %v, want ErrBudgetExceeded", err)
+	}
+}

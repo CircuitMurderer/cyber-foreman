@@ -35,6 +35,7 @@ func (s *Service) reviewAgentTurn(
 		Data: map[string]any{
 			"provider": descriptor.Provider, "model": descriptor.Model,
 			"tool_calling": descriptor.ToolCalling, "allow_workspace_diff": descriptor.AllowWorkspaceDiff,
+			"allow_operator_attention": descriptor.AllowAttention,
 		},
 	})
 	trusted := make([]string, 0, len(instructions))
@@ -51,6 +52,10 @@ func (s *Service) reviewAgentTurn(
 			allowWorkspaceDiff: descriptor.AllowWorkspaceDiff,
 		},
 	})
+	if err == nil && review.Verdict == supervisor.SemanticAttention && !descriptor.AllowAttention {
+		err = errors.New("semantic reviewer requested disabled operator attention")
+		review = supervisor.SemanticReview{}
+	}
 	data := map[string]any{
 		"provider": descriptor.Provider, "model": descriptor.Model, "success": err == nil,
 	}
@@ -83,6 +88,7 @@ func (t *semanticToolbox) SupportedTools() []supervisor.SemanticTool {
 	tools := []supervisor.SemanticTool{
 		supervisor.SemanticToolInspectTask,
 		supervisor.SemanticToolInspectRecentActivity,
+		supervisor.SemanticToolInspectAgentActivity,
 	}
 	if t.allowWorkspaceDiff {
 		if task, err := t.service.GetTask(t.taskID); err == nil && task.WorktreeRoot != "" {
@@ -116,6 +122,21 @@ func (t *semanticToolbox) ExecuteSemanticTool(ctx context.Context, name supervis
 				result, err = t.inspectRecentActivity(args.Limit)
 			}
 		}
+	case supervisor.SemanticToolInspectAgentActivity:
+		var args struct {
+			Limit int `json:"limit,omitempty"`
+		}
+		err = decodeSemanticToolArguments(arguments, &args)
+		if err == nil {
+			if args.Limit == 0 {
+				args.Limit = 10
+			}
+			if args.Limit < 1 || args.Limit > 20 {
+				err = errors.New("limit must be between 1 and 20")
+			} else {
+				result, err = t.inspectAgentActivity(args.Limit)
+			}
+		}
 	case supervisor.SemanticToolInspectWorkspaceDiff:
 		err = decodeSemanticToolArguments(arguments, &struct{}{})
 		if err == nil {
@@ -147,13 +168,99 @@ func (t *semanticToolbox) inspectTask() (string, error) {
 		"task_id": task.ID, "kind": task.Kind, "adapter": task.Adapter, "status": task.Status,
 		"supervision_budget_used": t.snapshot.Budget,
 		"supervision_budget_limits": map[string]int{
-			"nudges":             t.snapshot.Policy.MaxNudges,
-			"retries":            t.snapshot.Policy.MaxRetries,
-			"test_repairs":       t.snapshot.Policy.MaxTestRepairs,
-			"semantic_redirects": t.snapshot.Policy.MaxSemanticRedirects,
+			"nudges":               t.snapshot.Policy.MaxNudges,
+			"retries":              t.snapshot.Policy.MaxRetries,
+			"test_repairs":         t.snapshot.Policy.MaxTestRepairs,
+			"semantic_redirects":   t.snapshot.Policy.MaxSemanticRedirects,
+			"semantic_escalations": t.snapshot.Policy.MaxSemanticEscalations,
 		},
 		"deterministic_verification": semanticVerificationSummary(t.report),
 	})
+}
+
+func (t *semanticToolbox) inspectAgentActivity(limit int) (string, error) {
+	// Scan the full default replay window so a long stream of text chunks does
+	// not hide earlier tool activity from the bounded result.
+	events := t.service.bus.RecentTaskEvents(t.taskID, 4096)
+	result := make([]map[string]any, 0, limit)
+	for index := len(events) - 1; index >= 0 && len(result) < limit; index-- {
+		if activity, ok := safeAgentActivity(events[index]); ok {
+			result = append(result, activity)
+		}
+	}
+	for left, right := 0, len(result)-1; left < right; left, right = left+1, right-1 {
+		result[left], result[right] = result[right], result[left]
+	}
+	return marshalSemanticToolResult(map[string]any{"agent_activity": result})
+}
+
+func safeAgentActivity(event domain.Event) (map[string]any, bool) {
+	if event.Type == domain.EventAgentPermission {
+		payload, err := json.Marshal(event.Data)
+		if err != nil {
+			return nil, false
+		}
+		var permission domain.AgentPermissionData
+		if json.Unmarshal(payload, &permission) != nil {
+			return nil, false
+		}
+		return map[string]any{
+			"sequence": event.Sequence, "occurred_at": event.Timestamp,
+			"activity": "permission_requested", "option_count": len(permission.Options),
+		}, true
+	}
+	if event.Type != domain.EventAgentSessionUpdate {
+		return nil, false
+	}
+	payload, err := json.Marshal(event.Data)
+	if err != nil {
+		return nil, false
+	}
+	var envelope domain.AgentSessionUpdateData
+	if json.Unmarshal(payload, &envelope) != nil {
+		return nil, false
+	}
+	var update struct {
+		SessionUpdate string `json:"sessionUpdate"`
+		Kind          string `json:"kind"`
+		Status        string `json:"status"`
+		Raw           struct {
+			Item struct {
+				Type   string `json:"type"`
+				Status string `json:"status"`
+			} `json:"item"`
+		} `json:"raw"`
+	}
+	if json.Unmarshal(envelope.Update, &update) != nil ||
+		(update.SessionUpdate != "tool_call" && update.SessionUpdate != "tool_call_update") {
+		return nil, false
+	}
+	if update.Kind == "" {
+		update.Kind = update.Raw.Item.Type
+	}
+	if update.Status == "" {
+		update.Status = update.Raw.Item.Status
+	}
+	result := map[string]any{
+		"sequence": event.Sequence, "occurred_at": event.Timestamp,
+		"activity": update.SessionUpdate,
+	}
+	if update.Kind != "" {
+		result["kind"] = boundSemanticMetadata(update.Kind)
+	}
+	if update.Status != "" {
+		result["status"] = boundSemanticMetadata(update.Status)
+	}
+	return result, true
+}
+
+func boundSemanticMetadata(value string) string {
+	value = strings.TrimSpace(value)
+	runes := []rune(value)
+	if len(runes) > 128 {
+		runes = runes[:128]
+	}
+	return string(runes)
 }
 
 func (t *semanticToolbox) inspectRecentActivity(limit int) (string, error) {

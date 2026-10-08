@@ -64,6 +64,18 @@ func TestCreateTaskRejectsNegativeSemanticRedirectBudget(t *testing.T) {
 	}
 }
 
+func TestCreateTaskRejectsNegativeSemanticEscalationBudget(t *testing.T) {
+	service, bus := newAPITestService(t)
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/tasks", strings.NewReader(
+		`{"adapter":"test","input":{"command":["ignored"]},"supervision":{"max_semantic_escalations":-1}}`,
+	))
+	recorder := httptest.NewRecorder()
+	NewServer(service, bus).Handler().ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusBadRequest || !strings.Contains(recorder.Body.String(), "max_semantic_escalations") {
+		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+}
+
 func TestEventStreamReplaysStableEnvelope(t *testing.T) {
 	service, bus := newAPITestService(t)
 	bus.Publish(domain.Event{TaskID: "task-replay", Type: domain.EventAgentOutput, Timestamp: time.Now().UTC(), Data: map[string]string{"line": "hello"}})

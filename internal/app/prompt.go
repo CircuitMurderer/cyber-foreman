@@ -359,39 +359,70 @@ func (s *Service) consumePrompt(ctx context.Context, taskID string, events <-cha
 				if currentInstructionSource == "operator" {
 					reviewInstruction = currentInstruction
 				}
-				if review, reviewed := s.reviewAgentTurn(
+				review, reviewed := s.reviewAgentTurn(
 					ctx, taskID, runtime.sessionID, runtime.semanticReview, trustedPrompts,
 					reviewInstruction, turnResponse.String(), report, snapshot,
-				); reviewed && review.Verdict == supervisor.SemanticRedirect {
-					sequence++
-					decision := supervisor.Decision{
-						RuleID: "semantic-review", Action: supervisor.ActionSemanticRedirect,
-						Reason:     review.Reason,
-						Evidence:   []string{fmt.Sprintf("%s:semantic-review:%d", taskID, sequence)},
-						DedupeKey:  fmt.Sprintf("%s:semantic-review:%d", taskID, promptGeneration),
-						BudgetCost: supervisor.BudgetCost{SemanticRedirects: 1},
-					}
-					next, _, executeErr := executor.Execute(ctx, snapshot, decision, noOpPerformer{supervisor.ActionSemanticRedirect: true})
-					if executeErr == nil {
-						snapshot = next
-						if err := s.transition(taskID, domain.TaskRunning, "semantic reviewer requested a correction"); err != nil {
+				)
+				if reviewed {
+					switch review.Verdict {
+					case supervisor.SemanticRedirect:
+						sequence++
+						decision := supervisor.Decision{
+							RuleID: "semantic-review", Action: supervisor.ActionSemanticRedirect,
+							Reason:     review.Reason,
+							Evidence:   []string{fmt.Sprintf("%s:semantic-review:%d", taskID, sequence)},
+							DedupeKey:  fmt.Sprintf("%s:semantic-review:%d", taskID, promptGeneration),
+							BudgetCost: supervisor.BudgetCost{SemanticRedirects: 1},
+						}
+						next, _, executeErr := executor.Execute(ctx, snapshot, decision, noOpPerformer{supervisor.ActionSemanticRedirect: true})
+						if executeErr == nil {
+							snapshot = next
+							if err := s.transition(taskID, domain.TaskRunning, "semantic reviewer requested a correction"); err != nil {
+								return
+							}
+							snapshot.Status = domain.TaskRunning
+							s.bus.Publish(domain.Event{
+								TaskID: taskID, SessionID: runtime.sessionID, Type: domain.EventAgentFollowUp,
+								Timestamp: time.Now().UTC(), Data: map[string]any{
+									"stop_reason": "semantic_redirect", "rule_id": decision.RuleID,
+								},
+							})
+							followUp := semanticRedirectPrompt(review)
+							startPrompt(followUp, followUp, "supervisor", true)
+							idleC = resetTaskTimer(idleTimer, nextIdleDelay(snapshot))
+							continue
+						}
+						if !errors.Is(executeErr, supervisor.ErrBudgetExceeded) {
+							_ = s.requireAttention(taskID, "semantic reviewer action failed: "+executeErr.Error())
 							return
 						}
-						snapshot.Status = domain.TaskRunning
-						s.bus.Publish(domain.Event{
-							TaskID: taskID, SessionID: runtime.sessionID, Type: domain.EventAgentFollowUp,
-							Timestamp: time.Now().UTC(), Data: map[string]any{
-								"stop_reason": "semantic_redirect", "rule_id": decision.RuleID,
-							},
-						})
-						followUp := semanticRedirectPrompt(review)
-						startPrompt(followUp, followUp, "supervisor", true)
-						idleC = resetTaskTimer(idleTimer, nextIdleDelay(snapshot))
-						continue
-					}
-					if !errors.Is(executeErr, supervisor.ErrBudgetExceeded) {
-						_ = s.requireAttention(taskID, "semantic reviewer action failed: "+executeErr.Error())
-						return
+					case supervisor.SemanticAttention:
+						sequence++
+						decision := supervisor.Decision{
+							RuleID: "semantic-review-attention", Action: supervisor.ActionAttentionRequired,
+							Reason:     review.Reason,
+							Evidence:   []string{fmt.Sprintf("%s:semantic-attention:%d", taskID, sequence)},
+							DedupeKey:  fmt.Sprintf("%s:semantic-attention:%d", taskID, promptGeneration),
+							BudgetCost: supervisor.BudgetCost{SemanticEscalations: 1},
+						}
+						next, _, executeErr := executor.Execute(ctx, snapshot, decision, noOpPerformer{supervisor.ActionAttentionRequired: true})
+						if executeErr == nil {
+							snapshot = next
+							if err := s.requireAttention(taskID, "semantic reviewer requested operator attention: "+review.Reason); err != nil {
+								return
+							}
+							snapshot.Status = domain.TaskAttention
+							idleC = stopTaskTimer(idleTimer)
+							hardC = stopTaskTimer(hardTimer)
+							if runtime.interactive {
+								continue
+							}
+							return
+						}
+						if !errors.Is(executeErr, supervisor.ErrBudgetExceeded) {
+							_ = s.requireAttention(taskID, "semantic reviewer escalation failed: "+executeErr.Error())
+							return
+						}
 					}
 				}
 				s.finishVerification(taskID, runtime, report)

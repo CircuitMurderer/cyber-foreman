@@ -29,6 +29,7 @@ export function TaskComposer({adapters, onCreated}: TaskComposerProps) {
   const [maxRetries, setMaxRetries] = useState(2);
   const [maxTestRepairs, setMaxTestRepairs] = useState(2);
   const [maxSemanticRedirects, setMaxSemanticRedirects] = useState(1);
+	const [maxSemanticEscalations, setMaxSemanticEscalations] = useState(1);
   const [verifyWorkspace, setVerifyWorkspace] = useState(true);
   const [runTests, setRunTests] = useState(false);
   const [testCommand, setTestCommand] = useState("./scripts/test");
@@ -101,7 +102,8 @@ export function TaskComposer({adapters, onCreated}: TaskComposerProps) {
                 max_nudges: maxNudges,
                 max_retries: maxRetries,
                 max_test_repairs: maxTestRepairs,
-                max_semantic_redirects: maxSemanticRedirects
+				max_semantic_redirects: maxSemanticRedirects,
+				max_semantic_escalations: maxSemanticEscalations
               }
             }
           : {}),
@@ -244,6 +246,7 @@ export function TaskComposer({adapters, onCreated}: TaskComposerProps) {
               <Field label="最大恢复"><input className="control" type="number" min={0} value={maxRetries} onChange={(event) => setMaxRetries(Number(event.target.value))} /></Field>
               <Field label="最大测试修复"><input className="control" type="number" min={0} value={maxTestRepairs} onChange={(event) => setMaxTestRepairs(Number(event.target.value))} /></Field>
               <Field label="最大语义纠偏"><input className="control" type="number" min={0} value={maxSemanticRedirects} onChange={(event) => setMaxSemanticRedirects(Number(event.target.value))} /></Field>
+			  <Field label="最大人工升级"><input className="control" type="number" min={0} value={maxSemanticEscalations} onChange={(event) => setMaxSemanticEscalations(Number(event.target.value))} /></Field>
             </div>
           )}
 

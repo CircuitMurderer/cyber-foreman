@@ -29,12 +29,13 @@ type taskInput struct {
 }
 
 type supervisionPolicy struct {
-	IdleTimeout          string `json:"idle_timeout,omitempty"`
-	HardTimeout          string `json:"hard_timeout,omitempty"`
-	MaxNudges            *int   `json:"max_nudges,omitempty"`
-	MaxRetries           *int   `json:"max_retries,omitempty"`
-	MaxTestRepairs       *int   `json:"max_test_repairs,omitempty"`
-	MaxSemanticRedirects *int   `json:"max_semantic_redirects,omitempty"`
+	IdleTimeout            string `json:"idle_timeout,omitempty"`
+	HardTimeout            string `json:"hard_timeout,omitempty"`
+	MaxNudges              *int   `json:"max_nudges,omitempty"`
+	MaxRetries             *int   `json:"max_retries,omitempty"`
+	MaxTestRepairs         *int   `json:"max_test_repairs,omitempty"`
+	MaxSemanticRedirects   *int   `json:"max_semantic_redirects,omitempty"`
+	MaxSemanticEscalations *int   `json:"max_semantic_escalations,omitempty"`
 }
 
 type verificationRequest struct {
@@ -167,7 +168,8 @@ func (p *supervisionPolicy) appPolicy() (*supervisor.Policy, error) {
 	}
 	for name, value := range map[string]*int{
 		"max_nudges": p.MaxNudges, "max_retries": p.MaxRetries, "max_test_repairs": p.MaxTestRepairs,
-		"max_semantic_redirects": p.MaxSemanticRedirects,
+		"max_semantic_redirects":   p.MaxSemanticRedirects,
+		"max_semantic_escalations": p.MaxSemanticEscalations,
 	} {
 		if value != nil && *value < 0 {
 			return nil, fmt.Errorf("supervision.%s must not be negative", name)
@@ -184,6 +186,9 @@ func (p *supervisionPolicy) appPolicy() (*supervisor.Policy, error) {
 	}
 	if p.MaxSemanticRedirects != nil {
 		result.MaxSemanticRedirects = *p.MaxSemanticRedirects
+	}
+	if p.MaxSemanticEscalations != nil {
+		result.MaxSemanticEscalations = *p.MaxSemanticEscalations
 	}
 	return &result, nil
 }

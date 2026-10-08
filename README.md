@@ -220,9 +220,10 @@ Foreman 可以在 Agent 每轮结束且确定性 Git/命令验证通过后，再
       "base_url": "https://api.deepseek.com/v1",
       "api_key_env": "FOREMAN_AGENT_API_KEY_OPENAI",
       "model": "deepseek-chat",
-	  "timeout": "20s",
-	  "tool_calling": true,
-	  "allow_workspace_diff": false
+      "timeout": "20s",
+      "tool_calling": true,
+	  "allow_workspace_diff": false,
+	  "allow_operator_attention": false
     }
   }
 }
@@ -232,7 +233,9 @@ Foreman 可以在 Agent 每轮结束且确定性 Git/命令验证通过后，再
 
 内网部署只需把 `base_url`、`model` 和 `api_key_env` 换成本地 Qwen 的 OpenAI-compatible 参数；无鉴权端点可以省略 `api_key_env`。如果配置了变量名但变量缺失，Foreman 会输出警告并关闭辅助复核，其余功能继续运行。每个任务的“最大语义纠偏”默认是 1，设为 0 可禁用该任务的自动纠偏；预算用尽后的 LLM 建议只保留在事件记录中，不会形成无限循环。
 
-启用 `tool_calling` 后，复核模型可以调用 Foreman 提供的受控工具：读取任务状态与预算、读取不含消息正文的最近生命周期摘要，以及提交 `accept_turn`、`report_uncertain` 或 `request_follow_up`。其中 `request_follow_up` 只是提议，仍会转换为原有的 `semantic_redirect` Decision，并经过状态、去重和语义纠偏预算后才会追加给 Agent；模型不能调用任意 Shell、文件系统或 Adapter 方法。
+启用 `tool_calling` 后，复核模型可以调用 Foreman 提供的受控工具：读取任务状态与预算、读取不含消息正文的最近生命周期摘要、读取不含命令参数/文件内容/原始输出的 Agent 工具活动，以及提交 `accept_turn`、`report_uncertain` 或 `request_follow_up`。其中 `request_follow_up` 只是提议，仍会转换为原有的 `semantic_redirect` Decision，并经过状态、去重和语义纠偏预算后才会追加给 Agent；模型不能调用任意 Shell、文件系统或 Adapter 方法。
+
+`allow_operator_attention` 默认关闭。显式打开后，模型还可以调用 `request_operator_attention`，将无法通过一次 follow-up 安全消除的明确风险升级为 `attention_required`。该请求使用独立的“最大人工升级”预算，仍经过 Executor；操作员可以在界面查看原因并继续同一 Agent session。模型不能用它把确定性失败改成成功，未开启能力、预算耗尽或调用异常时均 fail-open。
 
 默认只自动发送有界的操作员指令、当前 Agent 可见回复以及确定性验证结论。`allow_workspace_diff` 默认为 `false`；只有显式打开时，且任务使用隔离 worktree，模型才能请求经过敏感路径处理和长度限制的 Git diff。操作员指令、Agent 回复以及显式允许的 diff 仍可能包含业务代码或敏感信息。使用外部模型意味着这些内容会离开本机；敏感项目应改用内网模型、保持 diff 工具关闭，或完全关闭语义复核。隐藏思维和密钥不会作为工具结果提供。
 

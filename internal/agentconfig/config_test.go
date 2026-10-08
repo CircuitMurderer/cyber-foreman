@@ -108,7 +108,7 @@ func TestLoadFileRejectsInvalidSecurity(t *testing.T) {
 
 func TestLoadFileIncludesSemanticReviewer(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "agents.json")
-	contents := `{"agents":[{"name":"a","driver":"acp","command":"agent"}],"supervisor":{"semantic_review":{"format":"openai","base_url":"https://api.deepseek.com/v1","api_key_env":"FOREMAN_AGENT_API_KEY_OPENAI","model":"deepseek-chat","timeout":"15s","tool_calling":true,"allow_workspace_diff":true}}}`
+	contents := `{"agents":[{"name":"a","driver":"acp","command":"agent"}],"supervisor":{"semantic_review":{"format":"openai","base_url":"https://api.deepseek.com/v1","api_key_env":"FOREMAN_AGENT_API_KEY_OPENAI","model":"deepseek-chat","timeout":"15s","tool_calling":true,"allow_workspace_diff":true,"allow_operator_attention":true}}}`
 	if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -117,7 +117,7 @@ func TestLoadFileIncludesSemanticReviewer(t *testing.T) {
 		t.Fatal(err)
 	}
 	reviewer := config.Supervisor.SemanticReview
-	if reviewer.Format != FormatOpenAI || reviewer.Model != "deepseek-chat" || reviewer.TimeoutDuration().String() != "15s" || !reviewer.ToolCalling || !reviewer.AllowWorkspaceDiff {
+	if reviewer.Format != FormatOpenAI || reviewer.Model != "deepseek-chat" || reviewer.TimeoutDuration().String() != "15s" || !reviewer.ToolCalling || !reviewer.AllowWorkspaceDiff || !reviewer.AllowAttention {
 		t.Fatalf("semantic reviewer=%#v", reviewer)
 	}
 }

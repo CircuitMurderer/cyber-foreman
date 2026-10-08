@@ -432,6 +432,91 @@ func TestSemanticReviewerCannotOverrideFailedVerification(t *testing.T) {
 	}
 }
 
+func TestSemanticReviewerCanRequestBudgetedOperatorAttention(t *testing.T) {
+	adapter := newPromptTestAdapter(promptModeCompleteEveryTurnDelayed)
+	reviewer := &scriptedSemanticReviewer{
+		allowAttention: true,
+		reviews: []supervisor.SemanticReview{{
+			Verdict: supervisor.SemanticAttention, Reason: "the requested migration target is ambiguous",
+		}},
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	bus := event.NewBus()
+	events := bus.Subscribe(ctx, 128)
+	service := NewService(ctx, adapter, bus)
+	service.SetSemanticReviewer(reviewer)
+	policy := supervisor.DefaultPolicy()
+	policy.MaxSemanticEscalations = 1
+	task, err := service.StartTask(StartTaskRequest{
+		Prompt: "perform the migration", CWD: t.TempDir(), Supervision: &policy,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	final := waitForTerminalTask(t, service, task.ID)
+	if final.Status != domain.TaskAttention || !strings.Contains(final.Error, "migration target is ambiguous") {
+		t.Fatalf("task=%#v", final)
+	}
+	foundDecision := false
+	for {
+		select {
+		case item := <-events:
+			if decision, ok := item.Data.(supervisor.Decision); item.Type == domain.EventSupervisorDecision && ok {
+				foundDecision = foundDecision || decision.Action == supervisor.ActionAttentionRequired && decision.BudgetCost.SemanticEscalations == 1
+			}
+		default:
+			if !foundDecision {
+				t.Fatal("semantic attention decision was not recorded")
+			}
+			return
+		}
+	}
+}
+
+func TestSemanticReviewerCannotRequestOperatorAttentionWithoutOptIn(t *testing.T) {
+	adapter := newPromptTestAdapter(promptModeCompleteEveryTurnDelayed)
+	reviewer := &scriptedSemanticReviewer{reviews: []supervisor.SemanticReview{{
+		Verdict: supervisor.SemanticAttention, Reason: "unsupported escalation",
+	}}}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	service := NewService(ctx, adapter, event.NewBus())
+	service.SetSemanticReviewer(reviewer)
+	task, err := service.StartTask(StartTaskRequest{Prompt: "do work", CWD: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	final := waitForTerminalTask(t, service, task.ID)
+	if final.Status != domain.TaskCompleted {
+		t.Fatalf("disabled semantic escalation changed task result: %#v", final)
+	}
+}
+
+func TestSemanticReviewerAttentionBudgetExhaustionIsFailOpen(t *testing.T) {
+	adapter := newPromptTestAdapter(promptModeCompleteEveryTurnDelayed)
+	reviewer := &scriptedSemanticReviewer{
+		allowAttention: true,
+		reviews: []supervisor.SemanticReview{{
+			Verdict: supervisor.SemanticAttention, Reason: "needs a human",
+		}},
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	service := NewService(ctx, adapter, event.NewBus())
+	service.SetSemanticReviewer(reviewer)
+	policy := supervisor.DefaultPolicy()
+	policy.MaxSemanticEscalations = 0
+	task, err := service.StartTask(StartTaskRequest{Prompt: "do work", CWD: t.TempDir(), Supervision: &policy})
+	if err != nil {
+		t.Fatal(err)
+	}
+	final := waitForTerminalTask(t, service, task.ID)
+	if final.Status != domain.TaskCompleted {
+		t.Fatalf("semantic escalation budget exhaustion did not fail open: %#v", final)
+	}
+}
+
 func TestPromptTaskRebuildsDisconnectedSessionAndReplaysTrustedContext(t *testing.T) {
 	adapter := newDisconnectingPromptAdapter(false)
 	ctx, cancel := context.WithCancel(context.Background())
@@ -862,14 +947,15 @@ func (a *promptTestAdapter) recordedPrompts() []string {
 }
 
 type scriptedSemanticReviewer struct {
-	mu      sync.Mutex
-	reviews []supervisor.SemanticReview
-	err     error
-	calls   int
+	mu             sync.Mutex
+	reviews        []supervisor.SemanticReview
+	err            error
+	calls          int
+	allowAttention bool
 }
 
 func (r *scriptedSemanticReviewer) Descriptor() supervisor.SemanticReviewerDescriptor {
-	return supervisor.SemanticReviewerDescriptor{Provider: "test", Model: "reviewer"}
+	return supervisor.SemanticReviewerDescriptor{Provider: "test", Model: "reviewer", AllowAttention: r.allowAttention}
 }
 
 func (r *scriptedSemanticReviewer) Review(_ context.Context, request supervisor.SemanticReviewRequest) (supervisor.SemanticReview, error) {
