@@ -25,8 +25,12 @@ func TestCanTransition(t *testing.T) {
 		{"resume idle session", domain.TaskRecovering, domain.TaskWaiting, true},
 		{"skip verification", domain.TaskRunning, domain.TaskCompleted, false},
 		{"running needs attention", domain.TaskRunning, domain.TaskAttention, true},
+		{"agent asks permission", domain.TaskRunning, domain.TaskPermission, true},
+		{"permission resolved", domain.TaskPermission, domain.TaskRunning, true},
+		{"permission cancelled", domain.TaskPermission, domain.TaskStopped, true},
 		{"verification needs attention", domain.TaskVerifying, domain.TaskAttention, true},
 		{"repair attention task", domain.TaskAttention, domain.TaskRunning, true},
+		{"close attention session", domain.TaskAttention, domain.TaskStopped, true},
 		{"restart completed", domain.TaskCompleted, domain.TaskRunning, false},
 	}
 

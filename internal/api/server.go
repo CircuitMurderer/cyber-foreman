@@ -155,8 +155,14 @@ func (s *Server) taskAction(w http.ResponseWriter, r *http.Request) {
 		err = s.service.StopTask(r.PathValue("id"))
 	case "finish":
 		err = s.service.FinishTask(r.PathValue("id"))
+	case "resolve_permission":
+		actionCtx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+		defer cancel()
+		err = s.service.ResolvePermission(
+			actionCtx, r.PathValue("id"), strings.TrimSpace(request.RequestID), strings.TrimSpace(request.OptionID),
+		)
 	default:
-		writeAPIError(w, http.StatusBadRequest, "invalid_action", errors.New("action type must be interrupt, continue, finish, or cancel"))
+		writeAPIError(w, http.StatusBadRequest, "invalid_action", errors.New("action type must be interrupt, continue, finish, cancel, or resolve_permission"))
 		return
 	}
 	if err != nil {

@@ -36,12 +36,44 @@ func TestAdapterLifecycle(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	result, err := adapter.Prompt(ctx, session.ID, agent.PromptRequest{Text: "say hello"})
-	if err != nil {
+	promptDone := make(chan struct {
+		result agent.PromptResult
+		err    error
+	}, 1)
+	go func() {
+		result, promptErr := adapter.Prompt(ctx, session.ID, agent.PromptRequest{Text: "say hello"})
+		promptDone <- struct {
+			result agent.PromptResult
+			err    error
+		}{result: result, err: promptErr}
+	}()
+	var permission domain.AgentPermissionData
+	for permission.RequestID == "" {
+		select {
+		case event := <-events:
+			if event.Type == domain.EventAgentPermission {
+				permission, _ = event.Data.(domain.AgentPermissionData)
+			}
+		case <-ctx.Done():
+			t.Fatal("timed out waiting for permission request")
+		}
+	}
+	if permission.RequestID == "" || len(permission.Options) != 2 {
+		t.Fatalf("permission=%#v", permission)
+	}
+	if err := adapter.ResolvePermission(ctx, session.ID, permission.RequestID, "reject"); err != nil {
 		t.Fatal(err)
 	}
-	if result.StopReason != "end_turn" {
-		t.Fatalf("stop reason = %q", result.StopReason)
+	select {
+	case outcome := <-promptDone:
+		if outcome.err != nil {
+			t.Fatal(outcome.err)
+		}
+		if outcome.result.StopReason != "end_turn" {
+			t.Fatalf("stop reason = %q", outcome.result.StopReason)
+		}
+	case <-ctx.Done():
+		t.Fatal("timed out waiting for prompt")
 	}
 	if err := adapter.SetConfigOption(ctx, session.ID, agent.ConfigOption{ID: "model", Value: "google/gemini-test"}); err != nil {
 		t.Fatal(err)
@@ -51,7 +83,7 @@ func TestAdapterLifecycle(t *testing.T) {
 	}
 
 	wantedUpdates := map[string]bool{"agent_message_chunk": false, "cancel_seen": false}
-	foundPermission := false
+	foundPermission := true
 	deadline := time.After(3 * time.Second)
 	for !wantedUpdates["agent_message_chunk"] || !wantedUpdates["cancel_seen"] || !foundPermission {
 		select {

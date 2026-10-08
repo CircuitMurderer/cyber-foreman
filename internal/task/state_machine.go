@@ -8,7 +8,11 @@ var transitions = map[domain.TaskStatus]map[domain.TaskStatus]bool{
 		domain.TaskAttention: true,
 	},
 	domain.TaskRunning: {
-		domain.TaskRecovering: true, domain.TaskVerifying: true,
+		domain.TaskRecovering: true, domain.TaskVerifying: true, domain.TaskPermission: true,
+		domain.TaskFailed: true, domain.TaskStopped: true, domain.TaskAttention: true,
+	},
+	domain.TaskPermission: {
+		domain.TaskRunning: true, domain.TaskRecovering: true,
 		domain.TaskFailed: true, domain.TaskStopped: true, domain.TaskAttention: true,
 	},
 	domain.TaskRecovering: {
@@ -24,7 +28,7 @@ var transitions = map[domain.TaskStatus]map[domain.TaskStatus]bool{
 		domain.TaskStopped: true, domain.TaskAttention: true,
 	},
 	domain.TaskAttention: {
-		domain.TaskRunning: true,
+		domain.TaskRunning: true, domain.TaskStopped: true,
 	},
 }
 

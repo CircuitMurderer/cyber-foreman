@@ -43,6 +43,7 @@ type VerificationData struct {
 type Policy struct {
 	IdleTimeout            time.Duration `json:"idle_timeout"`
 	HardTimeout            time.Duration `json:"hard_timeout"`
+	WaitingTimeout         time.Duration `json:"waiting_timeout"`
 	MaxNudges              int           `json:"max_nudges"`
 	MaxRetries             int           `json:"max_retries"`
 	MaxTestRepairs         int           `json:"max_test_repairs"`
@@ -52,7 +53,7 @@ type Policy struct {
 
 func DefaultPolicy() Policy {
 	return Policy{
-		IdleTimeout: 90 * time.Second, HardTimeout: 30 * time.Minute,
+		IdleTimeout: 90 * time.Second, HardTimeout: 30 * time.Minute, WaitingTimeout: 2 * time.Hour,
 		MaxNudges: 2, MaxRetries: 2, MaxTestRepairs: 2,
 		MaxSemanticRedirects: 1, MaxSemanticEscalations: 1,
 	}

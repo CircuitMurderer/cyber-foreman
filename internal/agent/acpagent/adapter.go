@@ -57,10 +57,18 @@ type session struct {
 	stopOnce sync.Once
 	stopping atomic.Bool
 
-	eventMu      sync.Mutex
-	eventsClosed bool
-	stderrDone   chan struct{}
-	notifyDone   chan struct{}
+	eventMu       sync.Mutex
+	eventsClosed  bool
+	stderrDone    chan struct{}
+	notifyDone    chan struct{}
+	permissionSeq atomic.Uint64
+	permissionMu  sync.Mutex
+	permissions   map[string]*pendingPermission
+}
+
+type pendingPermission struct {
+	options  map[string]bool
+	decision chan string
 }
 
 type initializeResponse struct {
@@ -219,6 +227,7 @@ func (a *Adapter) Start(ctx context.Context, req agent.StartRequest) (agent.Sess
 		taskID: req.TaskID, cmd: cmd, stdin: stdin,
 		events: make(chan domain.Event, 512), done: make(chan struct{}),
 		stderrDone: make(chan struct{}), notifyDone: make(chan struct{}),
+		permissions: make(map[string]*pendingPermission),
 	}
 	s.client = acp.NewClient(ctx, stdout, stdin, a.handleRequest)
 	go a.consumeStderr(s, stderr)
@@ -491,7 +500,7 @@ func (a *Adapter) waitProcess(s *session) {
 	s.closeEvents()
 }
 
-func (a *Adapter) handleRequest(_ context.Context, method string, params json.RawMessage) (any, *acp.RPCError) {
+func (a *Adapter) handleRequest(ctx context.Context, method string, params json.RawMessage) (any, *acp.RPCError) {
 	if method != "session/request_permission" {
 		return nil, &acp.RPCError{Code: -32601, Message: "method not supported"}
 	}
@@ -506,25 +515,73 @@ func (a *Adapter) handleRequest(_ context.Context, method string, params json.Ra
 	if err := json.Unmarshal(params, &request); err != nil {
 		return nil, &acp.RPCError{Code: -32602, Message: "invalid permission request"}
 	}
-	if s, err := a.get(request.SessionID); err == nil {
-		options := make([]domain.PermissionOptionData, 0, len(request.Options))
-		for _, option := range request.Options {
-			options = append(options, domain.PermissionOptionData{ID: option.ID, Name: option.Name, Kind: option.Kind})
-		}
-		s.emit(domain.Event{
-			TaskID: s.taskID, SessionID: s.id, Type: domain.EventAgentPermission,
-			Timestamp: time.Now().UTC(), Data: domain.AgentPermissionData{Options: options},
-		})
+	s, err := a.get(request.SessionID)
+	if err != nil {
+		return map[string]any{"outcome": map[string]string{"outcome": "cancelled"}}, nil
 	}
-	for _, preferredKind := range []string{"reject_once", "reject_always"} {
-		for _, option := range request.Options {
-			name := strings.ToLower(option.Name)
-			if option.Kind == preferredKind || strings.Contains(name, "deny") || strings.Contains(name, "reject") {
-				return map[string]any{"outcome": map[string]string{"outcome": "selected", "optionId": option.ID}}, nil
-			}
+	requestID := fmt.Sprintf("permission-%d", s.permissionSeq.Add(1))
+	pending := &pendingPermission{options: make(map[string]bool, len(request.Options)), decision: make(chan string, 1)}
+	options := make([]domain.PermissionOptionData, 0, len(request.Options))
+	for _, option := range request.Options {
+		if strings.TrimSpace(option.ID) == "" {
+			continue
 		}
+		pending.options[option.ID] = true
+		options = append(options, domain.PermissionOptionData{ID: option.ID, Name: option.Name, Kind: option.Kind})
 	}
-	return map[string]any{"outcome": map[string]string{"outcome": "cancelled"}}, nil
+	if len(options) == 0 {
+		return map[string]any{"outcome": map[string]string{"outcome": "cancelled"}}, nil
+	}
+	s.permissionMu.Lock()
+	s.permissions[requestID] = pending
+	s.permissionMu.Unlock()
+	defer func() {
+		s.permissionMu.Lock()
+		delete(s.permissions, requestID)
+		s.permissionMu.Unlock()
+	}()
+	s.emit(domain.Event{
+		TaskID: s.taskID, SessionID: s.id, Type: domain.EventAgentPermission,
+		Timestamp: time.Now().UTC(), Data: domain.AgentPermissionData{
+			RequestID: requestID, Title: "Agent 请求执行权限", Options: options,
+		},
+	})
+	select {
+	case optionID := <-pending.decision:
+		return map[string]any{"outcome": map[string]string{"outcome": "selected", "optionId": optionID}}, nil
+	case <-ctx.Done():
+		return map[string]any{"outcome": map[string]string{"outcome": "cancelled"}}, nil
+	case <-s.done:
+		return map[string]any{"outcome": map[string]string{"outcome": "cancelled"}}, nil
+	}
+}
+
+func (a *Adapter) ResolvePermission(ctx context.Context, sessionID, requestID, optionID string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	s, err := a.get(sessionID)
+	if err != nil {
+		return err
+	}
+	s.permissionMu.Lock()
+	pending := s.permissions[requestID]
+	if pending == nil || !pending.options[optionID] {
+		s.permissionMu.Unlock()
+		return agent.ErrPermissionNotFound
+	}
+	if err := ctx.Err(); err != nil {
+		s.permissionMu.Unlock()
+		return err
+	}
+	delete(s.permissions, requestID)
+	s.permissionMu.Unlock()
+	select {
+	case pending.decision <- optionID:
+		return nil
+	case <-s.done:
+		return ErrUnknownSession
+	}
 }
 
 func (a *Adapter) readVersion(ctx context.Context, executable string) (string, error) {

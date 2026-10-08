@@ -25,12 +25,14 @@ export function TaskComposer({adapters, onCreated}: TaskComposerProps) {
   const [model, setModel] = useState("");
   const [idleTimeout, setIdleTimeout] = useState("90s");
   const [hardTimeout, setHardTimeout] = useState("30m");
+  const [waitingTimeout, setWaitingTimeout] = useState("2h");
   const [maxNudges, setMaxNudges] = useState(2);
   const [maxRetries, setMaxRetries] = useState(2);
   const [maxTestRepairs, setMaxTestRepairs] = useState(2);
   const [maxSemanticRedirects, setMaxSemanticRedirects] = useState(1);
-	const [maxSemanticEscalations, setMaxSemanticEscalations] = useState(1);
+  const [maxSemanticEscalations, setMaxSemanticEscalations] = useState(1);
   const [verifyWorkspace, setVerifyWorkspace] = useState(true);
+  const [requireChanges, setRequireChanges] = useState(true);
   const [runTests, setRunTests] = useState(false);
   const [testCommand, setTestCommand] = useState("./scripts/test");
   const [testTimeout, setTestTimeout] = useState("10m");
@@ -72,6 +74,7 @@ export function TaskComposer({adapters, onCreated}: TaskComposerProps) {
 
   useEffect(() => {
     setVerifyWorkspace(kind === "agent");
+    setRequireChanges(kind === "agent");
   }, [kind]);
 
   useEffect(() => {
@@ -99,16 +102,18 @@ export function TaskComposer({adapters, onCreated}: TaskComposerProps) {
               supervision: {
                 idle_timeout: idleTimeout,
                 hard_timeout: hardTimeout,
+                waiting_timeout: waitingTimeout,
                 max_nudges: maxNudges,
                 max_retries: maxRetries,
                 max_test_repairs: maxTestRepairs,
-				max_semantic_redirects: maxSemanticRedirects,
-				max_semantic_escalations: maxSemanticEscalations
+                max_semantic_redirects: maxSemanticRedirects,
+                max_semantic_escalations: maxSemanticEscalations
               }
             }
           : {}),
         verification: {
           workspace: verifyWorkspace,
+          ...(verifyWorkspace ? {workspace_policy: {require_changes: requireChanges}} : {}),
           ...(verificationCommands ? {commands: verificationCommands} : {})
         }
       };
@@ -211,6 +216,12 @@ export function TaskComposer({adapters, onCreated}: TaskComposerProps) {
               <input type="checkbox" checked={verifyWorkspace} onChange={(event) => setVerifyWorkspace(event.target.checked)} />
               <span><ShieldCheck size={16} /> 验证工作区</span>
             </label>
+            {verifyWorkspace && (
+              <label className="check-control">
+                <input type="checkbox" checked={requireChanges} onChange={(event) => setRequireChanges(event.target.checked)} />
+                <span><CheckCircle2 size={16} /> 必须产生改动</span>
+              </label>
+            )}
             <label className="check-control">
               <input type="checkbox" checked={runTests} onChange={(event) => setRunTests(event.target.checked)} />
               <span><CheckCircle2 size={16} /> 运行验证命令</span>
@@ -242,11 +253,12 @@ export function TaskComposer({adapters, onCreated}: TaskComposerProps) {
               </div>
               <Field label="空转超时"><input className="control mono" value={idleTimeout} onChange={(event) => setIdleTimeout(event.target.value)} /></Field>
               <Field label="硬超时"><input className="control mono" value={hardTimeout} onChange={(event) => setHardTimeout(event.target.value)} /></Field>
+              <Field label="等待会话 TTL"><input className="control mono" value={waitingTimeout} onChange={(event) => setWaitingTimeout(event.target.value)} /></Field>
               <Field label="最大提醒"><input className="control" type="number" min={0} value={maxNudges} onChange={(event) => setMaxNudges(Number(event.target.value))} /></Field>
               <Field label="最大恢复"><input className="control" type="number" min={0} value={maxRetries} onChange={(event) => setMaxRetries(Number(event.target.value))} /></Field>
               <Field label="最大测试修复"><input className="control" type="number" min={0} value={maxTestRepairs} onChange={(event) => setMaxTestRepairs(Number(event.target.value))} /></Field>
               <Field label="最大语义纠偏"><input className="control" type="number" min={0} value={maxSemanticRedirects} onChange={(event) => setMaxSemanticRedirects(Number(event.target.value))} /></Field>
-			  <Field label="最大人工升级"><input className="control" type="number" min={0} value={maxSemanticEscalations} onChange={(event) => setMaxSemanticEscalations(Number(event.target.value))} /></Field>
+              <Field label="最大人工升级"><input className="control" type="number" min={0} value={maxSemanticEscalations} onChange={(event) => setMaxSemanticEscalations(Number(event.target.value))} /></Field>
             </div>
           )}
 

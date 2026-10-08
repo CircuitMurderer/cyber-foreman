@@ -70,6 +70,41 @@ func TestServiceWorkspaceGateRejectsSensitiveChange(t *testing.T) {
 	}
 }
 
+func TestServiceWorkspaceGateRequiresAChange(t *testing.T) {
+	tests := []struct {
+		name string
+		mode string
+		want domain.TaskStatus
+	}{
+		{name: "no change", mode: "ok", want: domain.TaskAttention},
+		{name: "changed", mode: "write-tracked", want: domain.TaskCompleted},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			repo := appTestRepository(t)
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			service := NewService(ctx, processadapter.NewAdapter(), event.NewBus())
+			task, err := service.StartTask(StartTaskRequest{
+				Command: helperProcessCommand(t, test.mode), CWD: repo,
+				Verification: VerificationRequest{
+					Workspace: true, WorkspacePolicy: verification.WorkspacePolicy{RequireChanges: true},
+				},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			final := waitForTerminalTask(t, service, task.ID)
+			if final.Status != test.want {
+				t.Fatalf("status=%q, want=%q; error=%q", final.Status, test.want, final.Error)
+			}
+			if test.mode == "ok" && !strings.Contains(final.Error, "deterministic verification failed") {
+				t.Fatalf("missing completion-gate reason: %q", final.Error)
+			}
+		})
+	}
+}
+
 func TestServiceDoesNotRunTestsAfterWorkspaceSafetyFailure(t *testing.T) {
 	repo := appTestRepository(t)
 	ctx, cancel := context.WithCancel(context.Background())

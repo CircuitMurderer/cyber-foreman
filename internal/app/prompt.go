@@ -68,6 +68,8 @@ func (s *Service) consumePrompt(ctx context.Context, taskID string, events <-cha
 	midTurnOutcomes := make(chan midTurnReviewOutcome, 2)
 	var midTurnTimer *time.Timer
 	var midTurnC <-chan time.Time
+	var waitingTimer *time.Timer
+	var waitingC <-chan time.Time
 	var midTurnCancel context.CancelFunc
 	midTurnActive := false
 	midTurnReviews := 0
@@ -89,6 +91,7 @@ func (s *Service) consumePrompt(ctx context.Context, taskID string, events <-cha
 	}
 	startPrompt := func(displayText, promptText, source string, remember bool) {
 		stopMidTurnReview()
+		waitingC = stopTaskTimer(waitingTimer)
 		midTurnReviews = 0
 		turnResponse.Reset()
 		turnResponseRunes = 0
@@ -124,6 +127,11 @@ func (s *Service) consumePrompt(ctx context.Context, taskID string, events <-cha
 	hardTimer, hardC := taskTimer(runtime.policy.HardTimeout)
 	if hardTimer != nil {
 		defer hardTimer.Stop()
+	}
+	waitingTimer, waitingC = taskTimer(runtime.policy.WaitingTimeout)
+	waitingC = stopTaskTimer(waitingTimer)
+	if waitingTimer != nil {
+		defer waitingTimer.Stop()
 	}
 	if midTurnPolicy.Enabled {
 		midTurnTimer = time.NewTimer(midTurnPolicy.Interval)
@@ -184,7 +192,7 @@ func (s *Service) consumePrompt(ctx context.Context, taskID string, events <-cha
 		}
 
 		current, err := s.GetTask(taskID)
-		if err != nil || (current.Status != domain.TaskRunning && current.Status != domain.TaskWaiting) {
+		if err != nil || (current.Status != domain.TaskRunning && current.Status != domain.TaskWaiting && current.Status != domain.TaskPermission) {
 			_ = s.requireAttention(taskID, "agent disconnected outside a recoverable task state")
 			return false
 		}
@@ -222,11 +230,15 @@ func (s *Service) consumePrompt(ctx context.Context, taskID string, events <-cha
 		stored.sessionID = runtime.sessionID
 		s.runtimes[taskID] = stored
 		s.mu.Unlock()
-		if err := s.transition(taskID, previousStatus, "agent session rebuilt"); err != nil {
+		restoredStatus := previousStatus
+		if previousStatus == domain.TaskPermission && resumeTurn {
+			restoredStatus = domain.TaskRunning
+		}
+		if err := s.transition(taskID, restoredStatus, "agent session rebuilt"); err != nil {
 			_ = s.requireAttention(taskID, "leave recovery state: "+err.Error())
 			return false
 		}
-		snapshot.Status = previousStatus
+		snapshot.Status = restoredStatus
 		snapshot.LastProgressAt = time.Now().UTC()
 		if resumeTurn {
 			replay := sessionRecoveryPrompt(trustedPrompts)
@@ -249,6 +261,32 @@ func (s *Service) consumePrompt(ctx context.Context, taskID string, events <-cha
 	for {
 		select {
 		case action := <-runtime.actions:
+			if action.kind == taskActionPermission {
+				current, err := s.GetTask(taskID)
+				if err != nil || current.Status != domain.TaskPermission || !promptActive {
+					action.result <- ErrActionUnavailable
+					continue
+				}
+				if err := agent.ResolvePermission(ctx, runtime.adapter, runtime.sessionID, action.requestID, action.optionID); err != nil {
+					action.result <- err
+					continue
+				}
+				if err := s.transition(taskID, domain.TaskRunning, "operator resolved the Agent permission request"); err != nil {
+					action.result <- err
+					continue
+				}
+				snapshot.Status = domain.TaskRunning
+				snapshot.LastProgressAt = time.Now().UTC()
+				idleC = resetTaskTimer(idleTimer, runtime.policy.IdleTimeout)
+				s.bus.Publish(domain.Event{
+					TaskID: taskID, SessionID: runtime.sessionID, Type: domain.EventAgentPermissionDone,
+					Timestamp: time.Now().UTC(), Data: map[string]string{
+						"request_id": action.requestID, "option_id": action.optionID,
+					},
+				})
+				action.result <- nil
+				continue
+			}
 			if action.kind == taskActionContinue {
 				if promptActive || pendingFollowUp != "" {
 					action.result <- ErrActionUnavailable
@@ -318,6 +356,26 @@ func (s *Service) consumePrompt(ctx context.Context, taskID string, events <-cha
 				return
 			}
 			s.bus.Publish(event)
+			if event.Type == domain.EventAgentPermission {
+				permission, resolvable := event.Data.(domain.AgentPermissionData)
+				if resolvable && permission.RequestID != "" && len(permission.Options) > 0 {
+					if !agent.CanResolvePermission(runtime.adapter) {
+						_ = s.requireAttention(taskID, "Agent requested permission but its adapter cannot resolve it")
+						return
+					}
+					current, err := s.GetTask(taskID)
+					if err == nil && current.Status == domain.TaskRunning {
+						if err := s.transition(taskID, domain.TaskPermission, "Agent is waiting for operator permission"); err != nil {
+							_ = s.requireAttention(taskID, "record Agent permission request: "+err.Error())
+							return
+						}
+						snapshot.Status = domain.TaskPermission
+						stopMidTurnReview()
+						idleC = stopTaskTimer(idleTimer)
+					}
+					continue
+				}
+			}
 			appendBoundedResponse(&turnResponse, &turnResponseRunes, agentResponseChunk(event))
 			sequence++
 			observation, observed := supervisor.ObservationFromEvent(fmt.Sprintf("%s:event:%d", taskID, sequence), event)
@@ -535,6 +593,7 @@ func (s *Service) consumePrompt(ctx context.Context, taskID string, events <-cha
 							idleC = stopTaskTimer(idleTimer)
 							hardC = stopTaskTimer(hardTimer)
 							if runtime.interactive {
+								waitingC = resetTaskTimer(waitingTimer, runtime.policy.WaitingTimeout)
 								continue
 							}
 							return
@@ -552,6 +611,7 @@ func (s *Service) consumePrompt(ctx context.Context, taskID string, events <-cha
 						snapshot.Status = current.Status
 						idleC = stopTaskTimer(idleTimer)
 						hardC = stopTaskTimer(hardTimer)
+						waitingC = resetTaskTimer(waitingTimer, runtime.policy.WaitingTimeout)
 						continue
 					}
 				}
@@ -593,6 +653,7 @@ func (s *Service) consumePrompt(ctx context.Context, taskID string, events <-cha
 					snapshot.Status = domain.TaskAttention
 					idleC = stopTaskTimer(idleTimer)
 					hardC = stopTaskTimer(hardTimer)
+					waitingC = resetTaskTimer(waitingTimer, runtime.policy.WaitingTimeout)
 					continue
 				}
 				return
@@ -650,6 +711,16 @@ func (s *Service) consumePrompt(ctx context.Context, taskID string, events <-cha
 				_ = s.requireAttention(taskID, decisions[0].Reason)
 			} else {
 				_ = s.requireAttention(taskID, "task exceeded hard timeout")
+			}
+			return
+		case <-waitingC:
+			waitingC = nil
+			current, err := s.GetTask(taskID)
+			if err != nil || (current.Status != domain.TaskWaiting && current.Status != domain.TaskAttention) {
+				continue
+			}
+			if err := s.transition(taskID, domain.TaskStopped, "interactive Agent session expired while waiting for operator input"); err != nil {
+				_ = s.requireAttention(taskID, "expire waiting Agent session: "+err.Error())
 			}
 			return
 		case <-ctx.Done():

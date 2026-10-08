@@ -76,7 +76,7 @@ export function App() {
   }, [authenticated, loadTasks]);
 
   const selectedTask = tasks.find((task) => task.id === selectedID);
-  const activeCount = useMemo(() => tasks.filter((task) => ["queued", "running", "recovering", "verifying"].includes(task.status)).length, [tasks]);
+  const activeCount = useMemo(() => tasks.filter((task) => ["queued", "running", "recovering", "verifying", "waiting_permission"].includes(task.status)).length, [tasks]);
   const attentionCount = useMemo(() => tasks.filter((task) => task.status === "attention_required").length, [tasks]);
 
   function handleCreated(task: Task) {

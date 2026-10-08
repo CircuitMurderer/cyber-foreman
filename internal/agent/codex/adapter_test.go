@@ -83,23 +83,36 @@ func TestAdapterPromptContinueAndCancel(t *testing.T) {
 	}
 }
 
-func TestPermissionRequestsAreDeclined(t *testing.T) {
-	s := &session{taskID: "task", id: "thread", events: make(chan domain.Event, 1)}
-	result, rpcErr := s.handleRequest(context.Background(), "item/commandExecution/requestApproval", json.RawMessage(`{}`))
-	if rpcErr != nil {
-		t.Fatal(rpcErr)
+func TestPermissionRequestsWaitForStructuredDecision(t *testing.T) {
+	s := &session{
+		taskID: "task", id: "thread", events: make(chan domain.Event, 1), done: make(chan struct{}),
+		permissions: make(map[string]*codexPermission),
 	}
-	decision, ok := result.(map[string]string)
-	if !ok || decision["decision"] != "decline" {
-		t.Fatalf("decision = %#v", result)
+	adapter := &Adapter{sessions: map[string]*session{"thread": s}}
+	type outcome struct {
+		result any
+		err    *acp.RPCError
 	}
-	select {
-	case event := <-s.events:
-		if event.Type != domain.EventAgentPermission {
-			t.Fatalf("event type = %q", event.Type)
-		}
-	default:
-		t.Fatal("permission event was not emitted")
+	done := make(chan outcome, 1)
+	go func() {
+		result, rpcErr := s.handleRequest(context.Background(), "item/commandExecution/requestApproval", json.RawMessage(`{}`))
+		done <- outcome{result: result, err: rpcErr}
+	}()
+	event := <-s.events
+	permission, ok := event.Data.(domain.AgentPermissionData)
+	if event.Type != domain.EventAgentPermission || !ok || permission.RequestID == "" || len(permission.Options) != 3 {
+		t.Fatalf("permission event=%#v", event)
+	}
+	if err := adapter.ResolvePermission(context.Background(), "thread", permission.RequestID, "accept"); err != nil {
+		t.Fatal(err)
+	}
+	resolved := <-done
+	if resolved.err != nil {
+		t.Fatal(resolved.err)
+	}
+	decision, ok := resolved.result.(map[string]string)
+	if !ok || decision["decision"] != "accept" {
+		t.Fatalf("decision = %#v", resolved.result)
 	}
 }
 
@@ -200,7 +213,14 @@ func TestCodexHelperProcess(t *testing.T) {
 			_ = encoder.Encode(map[string]any{"id": message.ID, "result": map[string]string{"codexHome": "/tmp/codex", "platformFamily": "unix", "platformOs": "test", "userAgent": "codex-test"}})
 		case "initialized":
 		case "thread/start":
-			_ = encoder.Encode(map[string]any{"id": message.ID, "result": map[string]any{"thread": map[string]string{"id": "thread-1"}, "model": "test-model", "modelProvider": "test", "cwd": "/tmp", "approvalPolicy": "never", "sandbox": map[string]any{}, "approvalsReviewer": "user"}})
+			var params struct {
+				ApprovalPolicy    string `json:"approvalPolicy"`
+				ApprovalsReviewer string `json:"approvalsReviewer"`
+			}
+			if json.Unmarshal(message.Params, &params) != nil || params.ApprovalPolicy != "on-request" || params.ApprovalsReviewer != "user" {
+				os.Exit(12)
+			}
+			_ = encoder.Encode(map[string]any{"id": message.ID, "result": map[string]any{"thread": map[string]string{"id": "thread-1"}, "model": "test-model", "modelProvider": "test", "cwd": "/tmp", "approvalPolicy": "on-request", "sandbox": map[string]any{}, "approvalsReviewer": "user"}})
 		case "turn/start":
 			turnNumber++
 			activeTurn = fmt.Sprintf("turn-%d", turnNumber)

@@ -298,6 +298,10 @@ select.control { appearance: auto; }
 .metric-detail-empty { min-height: 220px; display: grid; place-items: center; color: var(--subtle); font-size: 11px; }
 
 .action-card { margin: 0 0 18px; border: 1px solid var(--line) !important; background: var(--panel) !important; }
+.permission-card { margin: 0 0 18px; border: 1px solid color-mix(in srgb, var(--warning) 35%, var(--line)) !important; background: var(--panel) !important; }
+.permission-card [data-slot="header"] > div { display: flex; align-items: center; gap: 10px; }
+.permission-card [data-slot="header"] > div > div { display: grid; gap: 3px; }
+.permission-options { display: flex; flex-wrap: wrap; gap: 9px; }
 .action-card [data-slot="header"] { display: flex; justify-content: space-between; }
 .action-content { display: grid; gap: 9px; }
 .action-dialog { display: grid; gap: 10px; }

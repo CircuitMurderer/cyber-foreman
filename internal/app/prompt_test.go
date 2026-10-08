@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -364,6 +365,107 @@ func TestSemanticReviewerRedirectsOnlyAfterDeterministicVerification(t *testing.
 			}
 			return
 		}
+	}
+}
+
+func TestAgentPermissionWaitsForOperatorAndResumesTurn(t *testing.T) {
+	adapter := newPromptTestAdapter(promptModePermissionThenComplete)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	bus := event.NewBus()
+	events := bus.Subscribe(ctx, 128)
+	service := NewService(ctx, adapter, bus)
+	policy := supervisor.DefaultPolicy()
+	policy.IdleTimeout = time.Second
+	policy.HardTimeout = 5 * time.Second
+	task, err := service.StartTask(StartTaskRequest{
+		Prompt: "perform protected work", Interactive: true, CWD: t.TempDir(), Supervision: &policy,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitForTaskStatus(t, service, task.ID, domain.TaskPermission)
+	actions := service.AvailableActions(task.ID)
+	if !slices.Contains(actions, "resolve_permission") || !slices.Contains(actions, "cancel") || slices.Contains(actions, "interrupt") {
+		t.Fatalf("permission actions=%#v", actions)
+	}
+	if err := service.ResolvePermission(ctx, task.ID, "permission-test", "unknown"); !errors.Is(err, agent.ErrPermissionNotFound) {
+		t.Fatalf("unknown permission option error=%v", err)
+	}
+	if current, err := service.GetTask(task.ID); err != nil || current.Status != domain.TaskPermission {
+		t.Fatalf("invalid option changed task: %#v err=%v", current, err)
+	}
+	if err := service.ResolvePermission(ctx, task.ID, "permission-test", "allow"); err != nil {
+		t.Fatal(err)
+	}
+	waitForTaskStatus(t, service, task.ID, domain.TaskWaiting)
+	if adapter.permissionDecision() != "allow" {
+		t.Fatalf("permission decision=%q", adapter.permissionDecision())
+	}
+	foundResolved := false
+	for {
+		select {
+		case item := <-events:
+			foundResolved = foundResolved || item.Type == domain.EventAgentPermissionDone
+		default:
+			if !foundResolved {
+				t.Fatal("permission resolution event was not recorded")
+			}
+			return
+		}
+	}
+}
+
+func TestWaitingInteractiveSessionExpires(t *testing.T) {
+	adapter := newPromptTestAdapter(promptModeCompleteEveryTurnDelayed)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	service := NewService(ctx, adapter, event.NewBus())
+	policy := supervisor.DefaultPolicy()
+	policy.WaitingTimeout = 20 * time.Millisecond
+	policy.HardTimeout = time.Second
+	task, err := service.StartTask(StartTaskRequest{
+		Prompt: "one turn", Interactive: true, CWD: t.TempDir(), Supervision: &policy,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	final := waitForTerminalTask(t, service, task.ID)
+	if final.Status != domain.TaskStopped {
+		t.Fatalf("expired task=%#v", final)
+	}
+}
+
+func TestContinuingInteractiveSessionRenewsWaitingTTL(t *testing.T) {
+	adapter := newPromptTestAdapter(promptModeCompleteEveryTurnDelayed)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	service := NewService(ctx, adapter, event.NewBus())
+	policy := supervisor.DefaultPolicy()
+	policy.WaitingTimeout = 200 * time.Millisecond
+	policy.HardTimeout = time.Second
+	task, err := service.StartTask(StartTaskRequest{
+		Prompt: "first turn", Interactive: true, CWD: t.TempDir(), Supervision: &policy,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitForTaskStatus(t, service, task.ID, domain.TaskWaiting)
+	time.Sleep(120 * time.Millisecond)
+	if err := service.ContinueTask(ctx, task.ID, "second turn"); err != nil {
+		t.Fatal(err)
+	}
+	waitForTaskStatus(t, service, task.ID, domain.TaskWaiting)
+	time.Sleep(120 * time.Millisecond)
+	current, err := service.GetTask(task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if current.Status != domain.TaskWaiting {
+		t.Fatalf("old waiting TTL was not replaced: %#v", current)
+	}
+	if final := waitForTerminalTask(t, service, task.ID); final.Status != domain.TaskStopped {
+		t.Fatalf("renewed waiting TTL did not expire: %#v", final)
 	}
 }
 
@@ -762,19 +864,23 @@ const (
 	promptModeMessageThenComplete
 	promptModeCompleteEveryTurn
 	promptModeCompleteEveryTurnDelayed
+	promptModePermissionThenComplete
 )
 
 type promptTestAdapter struct {
-	mode        promptTestMode
-	events      chan domain.Event
-	cancel      chan struct{}
-	stopOnce    sync.Once
-	taskID      string
-	promptMu    sync.Mutex
-	prompts     []string
-	promptCalls atomic.Int32
-	cancelCalls atomic.Int32
-	model       string
+	mode            promptTestMode
+	events          chan domain.Event
+	cancel          chan struct{}
+	stopOnce        sync.Once
+	taskID          string
+	promptMu        sync.Mutex
+	prompts         []string
+	promptCalls     atomic.Int32
+	cancelCalls     atomic.Int32
+	model           string
+	permission      chan string
+	permissionMu    sync.Mutex
+	permissionValue string
 }
 
 type disconnectPrompt struct {
@@ -899,7 +1005,9 @@ func (a *disconnectingPromptAdapter) configuredModels() []string {
 }
 
 func newPromptTestAdapter(mode promptTestMode) *promptTestAdapter {
-	return &promptTestAdapter{mode: mode, events: make(chan domain.Event, 32), cancel: make(chan struct{}, 4)}
+	return &promptTestAdapter{
+		mode: mode, events: make(chan domain.Event, 32), cancel: make(chan struct{}, 4), permission: make(chan string, 1),
+	}
 }
 
 func (a *promptTestAdapter) Name() string { return "fake-opencode" }
@@ -923,6 +1031,25 @@ func (a *promptTestAdapter) Prompt(ctx context.Context, _ string, req agent.Prom
 	a.prompts = append(a.prompts, req.Text)
 	a.promptMu.Unlock()
 	call := a.promptCalls.Add(1)
+	if a.mode == promptModePermissionThenComplete {
+		a.events <- domain.Event{
+			TaskID: a.taskID, SessionID: "session-test", Type: domain.EventAgentPermission, Timestamp: time.Now().UTC(),
+			Data: domain.AgentPermissionData{RequestID: "permission-test", Title: "allow protected work", Options: []domain.PermissionOptionData{
+				{ID: "allow", Name: "Allow once", Kind: "allow_once"},
+				{ID: "deny", Name: "Deny", Kind: "reject_once"},
+			}},
+		}
+		select {
+		case <-a.permission:
+			a.events <- domain.Event{
+				TaskID: a.taskID, SessionID: "session-test", Type: domain.EventAgentSessionUpdate, Timestamp: time.Now().UTC(),
+				Data: domain.AgentSessionUpdateData{Update: []byte(`{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"done"}}`)},
+			}
+			return agent.PromptResult{StopReason: "end_turn"}, nil
+		case <-ctx.Done():
+			return agent.PromptResult{}, ctx.Err()
+		}
+	}
 	if a.mode == promptModeCompleteEveryTurn || a.mode == promptModeCompleteEveryTurnDelayed {
 		a.events <- domain.Event{
 			TaskID: a.taskID, SessionID: "session-test", Type: domain.EventAgentSessionUpdate, Timestamp: time.Now().UTC(),
@@ -978,6 +1105,23 @@ func (a *promptTestAdapter) Cancel(context.Context, string) error {
 	default:
 	}
 	return nil
+}
+
+func (a *promptTestAdapter) ResolvePermission(_ context.Context, _ string, requestID, optionID string) error {
+	if requestID != "permission-test" || (optionID != "allow" && optionID != "deny") {
+		return agent.ErrPermissionNotFound
+	}
+	a.permissionMu.Lock()
+	a.permissionValue = optionID
+	a.permissionMu.Unlock()
+	a.permission <- optionID
+	return nil
+}
+
+func (a *promptTestAdapter) permissionDecision() string {
+	a.permissionMu.Lock()
+	defer a.permissionMu.Unlock()
+	return a.permissionValue
 }
 
 func (a *promptTestAdapter) SetConfigOption(_ context.Context, _ string, option agent.ConfigOption) error {

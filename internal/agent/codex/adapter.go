@@ -70,6 +70,15 @@ type session struct {
 	closed   bool
 	stderr   chan struct{}
 	notify   chan struct{}
+
+	permissionSeq atomic.Uint64
+	permissionMu  sync.Mutex
+	permissions   map[string]*codexPermission
+}
+
+type codexPermission struct {
+	responses map[string]any
+	decision  chan any
 }
 
 type turnOutcome struct {
@@ -286,7 +295,7 @@ func (a *Adapter) Start(ctx context.Context, req agent.StartRequest) (agent.Sess
 		taskID: req.TaskID, cmd: cmd, stdin: stdin, bridge: bridge,
 		events: make(chan domain.Event, 512), done: make(chan struct{}),
 		waiters: make(map[string]chan turnOutcome), completions: make(map[string]turnOutcome),
-		stderr: make(chan struct{}), notify: make(chan struct{}),
+		stderr: make(chan struct{}), notify: make(chan struct{}), permissions: make(map[string]*codexPermission),
 	}
 	if a.config.Provider != nil {
 		s.model = a.config.Provider.DefaultModel
@@ -314,7 +323,7 @@ func (a *Adapter) Start(ctx context.Context, req agent.StartRequest) (agent.Sess
 		} `json:"thread"`
 	}
 	threadParams := map[string]any{
-		"cwd": absCWD, "approvalPolicy": "never", "sandbox": "workspace-write",
+		"cwd": absCWD, "approvalPolicy": "on-request", "approvalsReviewer": "user", "sandbox": "workspace-write",
 		"ephemeral": true, "serviceName": "cyber-foreman",
 	}
 	if a.config.Provider != nil {
@@ -640,36 +649,98 @@ func (a *Adapter) emitUpdate(s *session, update map[string]any) {
 	})
 }
 
-func (s *session) handleRequest(_ context.Context, method string, params json.RawMessage) (any, *acp.RPCError) {
+func (s *session) handleRequest(ctx context.Context, method string, _ json.RawMessage) (any, *acp.RPCError) {
 	switch method {
 	case "item/commandExecution/requestApproval", "item/fileChange/requestApproval":
-		s.emit(domain.Event{
-			TaskID: s.taskID, SessionID: s.id, Type: domain.EventAgentPermission,
-			Timestamp: time.Now().UTC(), Data: domain.AgentPermissionData{Options: []domain.PermissionOptionData{
-				{ID: "decline", Name: "Decline", Kind: "reject_once"},
-			}},
-		})
-		return map[string]string{"decision": "decline"}, nil
+		return s.requestPermission(ctx, "Codex 请求执行受保护操作", []domain.PermissionOptionData{
+			{ID: "accept", Name: "允许一次", Kind: "allow_once"},
+			{ID: "accept_for_session", Name: "本次会话始终允许", Kind: "allow_always"},
+			{ID: "decline", Name: "拒绝", Kind: "reject_once"},
+		}, map[string]any{
+			"accept":             map[string]string{"decision": "accept"},
+			"accept_for_session": map[string]string{"decision": "acceptForSession"},
+			"decline":            map[string]string{"decision": "decline"},
+		}), nil
 	case "item/permissions/requestApproval":
 		s.emit(domain.Event{
 			TaskID: s.taskID, SessionID: s.id, Type: domain.EventAgentPermission,
-			Timestamp: time.Now().UTC(), Data: map[string]any{"options": []any{}, "request": json.RawMessage(params)},
+			Timestamp: time.Now().UTC(), Data: domain.AgentPermissionData{Title: "Codex 请求动态权限，但当前协议尚不能安全转授"},
 		})
 		return map[string]any{"permissions": map[string]any{}, "scope": "turn"}, nil
 	case "item/tool/requestUserInput":
 		s.emit(domain.Event{
 			TaskID: s.taskID, SessionID: s.id, Type: domain.EventAgentPermission,
-			Timestamp: time.Now().UTC(), Data: map[string]any{"options": []any{}, "request": json.RawMessage(params)},
+			Timestamp: time.Now().UTC(), Data: domain.AgentPermissionData{Title: "Codex 请求用户输入，当前由安全默认值处理"},
 		})
 		return map[string]any{"answers": map[string]any{}}, nil
 	case "mcpServer/elicitation/request":
 		s.emit(domain.Event{
 			TaskID: s.taskID, SessionID: s.id, Type: domain.EventAgentPermission,
-			Timestamp: time.Now().UTC(), Data: map[string]any{"options": []any{}, "request": json.RawMessage(params)},
+			Timestamp: time.Now().UTC(), Data: domain.AgentPermissionData{Title: "MCP 请求用户确认，已按默认策略拒绝"},
 		})
 		return map[string]string{"action": "decline"}, nil
 	default:
 		return nil, &acp.RPCError{Code: -32601, Message: "method not supported"}
+	}
+}
+
+func (s *session) requestPermission(ctx context.Context, title string, options []domain.PermissionOptionData, responses map[string]any) any {
+	requestID := fmt.Sprintf("permission-%d", s.permissionSeq.Add(1))
+	pending := &codexPermission{responses: responses, decision: make(chan any, 1)}
+	s.permissionMu.Lock()
+	if s.permissions == nil {
+		s.permissions = make(map[string]*codexPermission)
+	}
+	s.permissions[requestID] = pending
+	s.permissionMu.Unlock()
+	defer func() {
+		s.permissionMu.Lock()
+		delete(s.permissions, requestID)
+		s.permissionMu.Unlock()
+	}()
+	s.emit(domain.Event{
+		TaskID: s.taskID, SessionID: s.id, Type: domain.EventAgentPermission,
+		Timestamp: time.Now().UTC(), Data: domain.AgentPermissionData{RequestID: requestID, Title: title, Options: options},
+	})
+	select {
+	case result := <-pending.decision:
+		return result
+	case <-ctx.Done():
+		return map[string]string{"decision": "decline"}
+	case <-s.done:
+		return map[string]string{"decision": "decline"}
+	}
+}
+
+func (a *Adapter) ResolvePermission(ctx context.Context, sessionID, requestID, optionID string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	s, err := a.get(sessionID)
+	if err != nil {
+		return err
+	}
+	s.permissionMu.Lock()
+	pending := s.permissions[requestID]
+	response, valid := any(nil), false
+	if pending != nil {
+		response, valid = pending.responses[optionID]
+	}
+	if !valid {
+		s.permissionMu.Unlock()
+		return agent.ErrPermissionNotFound
+	}
+	if err := ctx.Err(); err != nil {
+		s.permissionMu.Unlock()
+		return err
+	}
+	delete(s.permissions, requestID)
+	s.permissionMu.Unlock()
+	select {
+	case pending.decision <- response:
+		return nil
+	case <-s.done:
+		return ErrUnknownSession
 	}
 }
 

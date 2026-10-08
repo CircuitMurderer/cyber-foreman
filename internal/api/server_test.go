@@ -162,6 +162,54 @@ func TestAgentRequestIsInteractive(t *testing.T) {
 	}
 }
 
+func TestAgentWorkspaceGateRequiresChangesByDefaultAndCanBeDisabled(t *testing.T) {
+	request := createTaskRequest{
+		Adapter: "opencode", Input: taskInput{Prompt: "implement the change"},
+		Verification: verificationRequest{Workspace: true},
+	}
+	converted, err := request.appRequest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !converted.Verification.WorkspacePolicy.RequireChanges {
+		t.Fatal("agent workspace verification should require a change by default")
+	}
+
+	disabled := false
+	request.Verification.WorkspacePolicy.RequireChanges = &disabled
+	converted, err = request.appRequest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if converted.Verification.WorkspacePolicy.RequireChanges {
+		t.Fatal("analysis-only task could not disable require_changes")
+	}
+}
+
+func TestCreateTaskRejectsRequireChangesWithoutWorkspaceVerification(t *testing.T) {
+	enabled := true
+	_, err := (createTaskRequest{
+		Adapter: "opencode", Input: taskInput{Prompt: "implement the change"},
+		Verification: verificationRequest{WorkspacePolicy: workspacePolicy{RequireChanges: &enabled}},
+	}).appRequest()
+	if err == nil || !strings.Contains(err.Error(), "requires workspace verification") {
+		t.Fatalf("error=%v, want require_changes validation", err)
+	}
+}
+
+func TestWaitingTimeoutIsParsed(t *testing.T) {
+	converted, err := (createTaskRequest{
+		Adapter: "opencode", Input: taskInput{Prompt: "wait for me"},
+		Supervision: &supervisionPolicy{WaitingTimeout: "45m"},
+	}).appRequest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if converted.Supervision == nil || converted.Supervision.WaitingTimeout != 45*time.Minute {
+		t.Fatalf("waiting timeout=%v", converted.Supervision)
+	}
+}
+
 func TestCreateTaskRejectsUnknownWorkspaceMode(t *testing.T) {
 	_, err := (createTaskRequest{
 		Adapter: "opencode", WorkspaceMode: "container", Input: taskInput{Prompt: "test"},
@@ -238,6 +286,40 @@ func TestFinishActionCompletesWaitingInteractiveTask(t *testing.T) {
 	if err != nil || finished.Status != domain.TaskCompleted {
 		t.Fatalf("finished task=%#v err=%v", finished, err)
 	}
+}
+
+func TestResolvePermissionActionResumesAgent(t *testing.T) {
+	adapter := &permissionAPITestAdapter{
+		events: make(chan domain.Event, 4), decision: make(chan string, 1), resolved: make(chan string, 1),
+	}
+	registry, err := agent.NewRegistry(adapter)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bus := event.NewBus()
+	service := app.NewServiceWithRegistry(context.Background(), registry, adapter.Name(), bus)
+	task, err := service.StartTask(app.StartTaskRequest{
+		Adapter: adapter.Name(), Prompt: "protected work", Interactive: true, CWD: t.TempDir(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = service.StopTask(task.ID) }()
+	waitForAPITaskStatus(t, service, task.ID, domain.TaskPermission)
+
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/tasks/"+task.ID+"/actions", strings.NewReader(
+		`{"type":"resolve_permission","request_id":"permission-1","option_id":"allow"}`,
+	))
+	request.SetPathValue("id", task.ID)
+	recorder := httptest.NewRecorder()
+	NewServer(service, bus).Handler().ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusAccepted {
+		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	if decision := <-adapter.resolved; decision != "allow" {
+		t.Fatalf("permission decision=%q", decision)
+	}
+	waitForAPITaskStatus(t, service, task.ID, domain.TaskWaiting)
 }
 
 func TestUnavailableAdapterIsListedButRejectsTasks(t *testing.T) {
@@ -362,6 +444,13 @@ type interactiveAPITestAdapter struct {
 	events chan domain.Event
 }
 
+type permissionAPITestAdapter struct {
+	events   chan domain.Event
+	decision chan string
+	resolved chan string
+	taskID   string
+}
+
 func (*interactiveAPITestAdapter) Name() string { return "interactive-test" }
 func (*interactiveAPITestAdapter) Capabilities() agent.Capabilities {
 	return agent.Capabilities{StructuredEvents: true, Prompt: true, CancelTurn: true}
@@ -382,6 +471,46 @@ func (*interactiveAPITestAdapter) SetConfigOption(context.Context, string, agent
 	return nil
 }
 func (*interactiveAPITestAdapter) Stop(context.Context, string) error { return nil }
+
+func (*permissionAPITestAdapter) Name() string { return "permission-test" }
+func (*permissionAPITestAdapter) Capabilities() agent.Capabilities {
+	return agent.Capabilities{StructuredEvents: true, Prompt: true, CancelTurn: true, PermissionEvents: true}
+}
+func (a *permissionAPITestAdapter) Start(_ context.Context, request agent.StartRequest) (agent.Session, error) {
+	a.taskID = request.TaskID
+	return agent.Session{ID: "session-" + request.TaskID}, nil
+}
+func (a *permissionAPITestAdapter) Events(context.Context, string) (<-chan domain.Event, error) {
+	return a.events, nil
+}
+func (a *permissionAPITestAdapter) Prompt(ctx context.Context, sessionID string, _ agent.PromptRequest) (agent.PromptResult, error) {
+	a.events <- domain.Event{
+		TaskID: a.taskID, SessionID: sessionID, Type: domain.EventAgentPermission, Timestamp: time.Now().UTC(),
+		Data: domain.AgentPermissionData{RequestID: "permission-1", Title: "allow protected work", Options: []domain.PermissionOptionData{
+			{ID: "allow", Name: "Allow", Kind: "allow_once"},
+			{ID: "deny", Name: "Deny", Kind: "reject_once"},
+		}},
+	}
+	select {
+	case <-a.decision:
+		return agent.PromptResult{StopReason: "end_turn"}, nil
+	case <-ctx.Done():
+		return agent.PromptResult{}, ctx.Err()
+	}
+}
+func (*permissionAPITestAdapter) Cancel(context.Context, string) error { return nil }
+func (*permissionAPITestAdapter) SetConfigOption(context.Context, string, agent.ConfigOption) error {
+	return nil
+}
+func (a *permissionAPITestAdapter) ResolvePermission(_ context.Context, _ string, requestID, optionID string) error {
+	if requestID != "permission-1" || (optionID != "allow" && optionID != "deny") {
+		return agent.ErrPermissionNotFound
+	}
+	a.decision <- optionID
+	a.resolved <- optionID
+	return nil
+}
+func (*permissionAPITestAdapter) Stop(context.Context, string) error { return nil }
 
 func (unavailableAPITestAdapter) Name() string { return "unavailable" }
 func (unavailableAPITestAdapter) Status() agent.Status {
@@ -409,3 +538,19 @@ func (apiTestAdapter) SetConfigOption(context.Context, string, agent.ConfigOptio
 	return agent.ErrUnsupported
 }
 func (apiTestAdapter) Stop(context.Context, string) error { return nil }
+
+func waitForAPITaskStatus(t *testing.T, service *app.Service, taskID string, status domain.TaskStatus) {
+	t.Helper()
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		current, err := service.GetTask(taskID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if current.Status == status {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatalf("task %s did not reach %s", taskID, status)
+}

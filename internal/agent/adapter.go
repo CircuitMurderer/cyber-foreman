@@ -8,7 +8,10 @@ import (
 	"cyber-foreman/internal/domain"
 )
 
-var ErrUnsupported = errors.New("adapter capability is unsupported")
+var (
+	ErrUnsupported        = errors.New("adapter capability is unsupported")
+	ErrPermissionNotFound = errors.New("permission request not found")
+)
 
 type ImplementationInfo struct {
 	Name    string `json:"name,omitempty"`
@@ -88,6 +91,8 @@ func (a *configuredAdapter) Probe(ctx context.Context) Status {
 	return Probe(ctx, a.Adapter)
 }
 
+func (a *configuredAdapter) unwrappedAdapter() Adapter { return a.Adapter }
+
 type Capabilities struct {
 	Command          bool `json:"command"`
 	StructuredEvents bool `json:"structured_events"`
@@ -122,6 +127,40 @@ type PromptResult struct {
 type ConfigOption struct {
 	ID    string
 	Value any
+}
+
+// PermissionResolver is an optional Adapter capability used when an Agent has
+// paused on a structured permission request.
+type PermissionResolver interface {
+	ResolvePermission(context.Context, string, string, string) error
+}
+
+func ResolvePermission(ctx context.Context, adapter Adapter, sessionID, requestID, optionID string) error {
+	for adapter != nil {
+		if resolver, ok := adapter.(PermissionResolver); ok {
+			return resolver.ResolvePermission(ctx, sessionID, requestID, optionID)
+		}
+		wrapped, ok := adapter.(interface{ unwrappedAdapter() Adapter })
+		if !ok {
+			break
+		}
+		adapter = wrapped.unwrappedAdapter()
+	}
+	return ErrUnsupported
+}
+
+func CanResolvePermission(adapter Adapter) bool {
+	for adapter != nil {
+		if _, ok := adapter.(PermissionResolver); ok {
+			return true
+		}
+		wrapped, ok := adapter.(interface{ unwrappedAdapter() Adapter })
+		if !ok {
+			return false
+		}
+		adapter = wrapped.unwrappedAdapter()
+	}
+	return false
 }
 
 type Adapter interface {

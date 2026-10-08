@@ -340,6 +340,9 @@ Rule-based Supervisor 当前已经提供：
 - Agent 断联后按 `max_retries` 重建 session，恢复模型配置，并重放有界的受信任指令上下文
 - 真实 ACP 子进程故障测试覆盖 cancel/follow-up、transport 断联、session 重建、测试修复与最终验证
 - 修复预算耗尽或工作区验证失败后的 `attention_required` 状态
+- Agent 权限请求的结构化暂停、人工允许/拒绝与审计事件
+- Agent 工作区验证默认要求产生实际改动，可为纯分析任务显式关闭
+- `waiting_input` / 可继续的 `attention_required` session 等待 TTL 与自动资源回收
 - OpenCode 单任务 mailbox、自动 idle 纠偏和 hard timeout
 - Agent turn 结束后的 `verifying → completed/attention_required` 完成门禁
 
@@ -359,13 +362,15 @@ curl -X POST http://127.0.0.1:8090/api/v1/tasks \
     "supervision":{
       "idle_timeout":"90s",
       "hard_timeout":"30m",
+      "waiting_timeout":"2h",
       "max_nudges":2,
       "max_retries":2,
       "max_test_repairs":2
     },
     "verification":{
       "commands":[{"argv":["./scripts/test"],"timeout":"10m"}],
-      "workspace":true
+      "workspace":true,
+      "workspace_policy":{"require_changes":true}
     }
   }'
 ```
@@ -377,6 +382,16 @@ curl -X POST http://127.0.0.1:8090/api/v1/tasks/TASK_ID/actions \
   -H 'Content-Type: application/json' \
   -d '{"type":"interrupt","message":"先检查现有接口，不要重写整个模块"}'
 ```
+
+Agent 请求命令或文件权限时，任务会进入 `waiting_permission`。从对应的 `agent.permission_requested` 事件读取 `request_id` 和候选 `options`，再提交原始候选项中的一个：
+
+```bash
+curl -X POST http://127.0.0.1:8090/api/v1/tasks/TASK_ID/actions \
+  -H 'Content-Type: application/json' \
+  -d '{"type":"resolve_permission","request_id":"permission-1","option_id":"OPTION_ID_FROM_EVENT"}'
+```
+
+Web 控制台会把同一请求显示成允许/拒绝按钮。Foreman 不会自动批准权限；不能安全转授的协议请求继续使用 Adapter 的安全默认响应。
 
 Agent 一轮完成并通过验证后，交互式 REST 任务进入 `waiting_input`，OpenCode ACP session 会继续保留。此时可以不取消任何 turn，直接继续当前对话：
 
@@ -394,7 +409,9 @@ curl -X POST http://127.0.0.1:8090/api/v1/tasks/TASK_ID/actions \
   -d '{"type":"finish"}'
 ```
 
-任务响应中的 `available_actions` 会明确给出当前可执行的 `interrupt`、`continue`、`finish`、`cancel` 和 `delete`。其中 `interrupt` 用于正在执行的 turn，`continue` 只用于已经等待输入且仍保有 session 的任务，`finish` 只在 `waiting_input` 出现并会把任务正常标记为 `completed`；它不能绕过失败的验证。
+任务响应中的 `available_actions` 会明确给出当前可执行的 `interrupt`、`continue`、`finish`、`cancel`、`delete` 和 `resolve_permission`。其中 `interrupt` 用于正在执行的 turn，`continue` 只用于已经等待输入且仍保有 session 的任务，`resolve_permission` 只在 Agent 等待结构化审批时出现，`finish` 只在 `waiting_input` 出现并会把任务正常标记为 `completed`；它不能绕过失败的验证。
+
+Agent 任务启用 workspace verification 时，REST API 默认设置 `require_changes=true`，因此没有产生文件变化的编码任务不会被误判为完成。纯分析或代码审查任务可显式传入 `"workspace_policy":{"require_changes":false}`。配置了验证命令时，工作区门禁和所有验证命令都必须通过。
 
 创建普通命令任务：
 
@@ -435,7 +452,7 @@ curl -N -H 'Last-Event-ID: evt-42' http://127.0.0.1:8090/api/v1/tasks/TASK_ID/ev
 curl -X DELETE http://127.0.0.1:8090/api/v1/tasks/TASK_ID
 ```
 
-SSE 事件带有 `id`、`version`、`sequence` 和 `occurred_at`。`serve` 模式下 cursor 与事件历史由 SQLite 持久化，页面刷新或 Foreman 重启后仍可读取完整时间线；非持久化 CLI 模式保留最近 4096 个事件和约 16 MiB。Agent 断联会经过 `running/waiting_input → recovering → 原状态`，旧 session 的迟到事件会被忽略；恢复上下文只包含操作员与监工指令，Agent 历史输出不重放，当前工作区是进度事实来源。工作区验证失败会立即进入 `attention_required`；普通测试失败会先按 `max_test_repairs` 自动修复并重新验证，预算耗尽后再转人工。
+SSE 事件带有 `id`、`version`、`sequence` 和 `occurred_at`。`serve` 模式下 cursor 与事件历史由 SQLite 持久化，页面刷新或 Foreman 重启后仍可读取完整时间线；非持久化 CLI 模式保留最近 4096 个事件和约 16 MiB。Agent 断联会经过 `running/waiting_permission/waiting_input → recovering → 原状态`，旧 session 的迟到事件会被忽略；恢复上下文只包含操作员与监工指令，Agent 历史输出不重放，当前工作区是进度事实来源。工作区验证失败会立即进入 `attention_required`；普通测试失败会先按 `max_test_repairs` 自动修复并重新验证，预算耗尽后再转人工。交互 session 在 `waiting_input` 或可继续的 `attention_required` 中默认保留两小时，到期后转为 `stopped` 并释放 Agent 进程；可用 `supervision.waiting_timeout` 调整。
 
 Web 任务详情同时提供“任务总结”和“对话与回复”：前者聚合原始任务、最新完整回复、轮次、工具活动、监工干预和验证结论；后者保留逐轮完整对话。两者都从持久事件重建，不会把模型的流式 chunk 当作互相独立的最终答案。
 
@@ -462,7 +479,7 @@ web/                     React/HeroUI 控制台
 
 ## 下一步
 
-1. 增加 API 认证、工作目录白名单和命令权限策略。
-2. 接入内网本地模型，作为低于确定性规则优先级的建议决策器。
+1. Foreman 重启后按持久化运行元数据重建可恢复任务，而不只转为 `attention_required`。
+2. 增加多用户审批身份、审批策略模板和通知渠道。
 
 > 当前 HTTP API 可以启动任意本地命令，因此默认只监听 `127.0.0.1`，不要直接暴露到局域网。

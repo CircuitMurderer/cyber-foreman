@@ -105,13 +105,16 @@ type taskRuntime struct {
 }
 
 type taskAction struct {
-	kind    string
-	message string
-	result  chan error
+	kind      string
+	message   string
+	requestID string
+	optionID  string
+	result    chan error
 }
 
 const taskActionInterrupt = "interrupt"
 const taskActionContinue = "continue"
+const taskActionPermission = "resolve_permission"
 
 func NewService(ctx context.Context, adapter agent.Adapter, bus *event.Bus) *Service {
 	registry, err := agent.NewRegistry(adapter)
@@ -450,6 +453,9 @@ func (s *Service) AvailableActions(id string) []string {
 	if hasRuntime && runtime.interactive && t.Status == domain.TaskWaiting {
 		actions = append(actions, "finish")
 	}
+	if hasRuntime && t.Kind == domain.TaskKindAgent && t.Status == domain.TaskPermission && agent.CanResolvePermission(runtime.adapter) {
+		actions = append(actions, "resolve_permission")
+	}
 	if !t.Status.Terminal() || (hasRuntime && t.Status == domain.TaskAttention) {
 		actions = append(actions, "cancel")
 	}
@@ -457,6 +463,38 @@ func (s *Service) AvailableActions(id string) []string {
 		actions = append(actions, "delete")
 	}
 	return actions
+}
+
+func (s *Service) ResolvePermission(ctx context.Context, id, requestID, optionID string) error {
+	if requestID == "" || optionID == "" {
+		return errors.New("permission request_id and option_id are required")
+	}
+	s.mu.RLock()
+	runtime, ok := s.runtimes[id]
+	t := s.tasks[id]
+	s.mu.RUnlock()
+	if t == nil {
+		return ErrTaskNotFound
+	}
+	if !ok || t.Kind != domain.TaskKindAgent || t.Status != domain.TaskPermission || runtime.actions == nil {
+		return ErrActionUnavailable
+	}
+	action := taskAction{
+		kind: taskActionPermission, requestID: requestID, optionID: optionID, result: make(chan error, 1),
+	}
+	select {
+	case runtime.actions <- action:
+	case <-ctx.Done():
+		return ctx.Err()
+	default:
+		return ErrActionUnavailable
+	}
+	select {
+	case err := <-action.result:
+		return err
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 func (s *Service) StopTask(id string) error {

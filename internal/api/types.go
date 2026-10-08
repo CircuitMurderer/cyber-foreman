@@ -31,6 +31,7 @@ type taskInput struct {
 type supervisionPolicy struct {
 	IdleTimeout            string `json:"idle_timeout,omitempty"`
 	HardTimeout            string `json:"hard_timeout,omitempty"`
+	WaitingTimeout         string `json:"waiting_timeout,omitempty"`
 	MaxNudges              *int   `json:"max_nudges,omitempty"`
 	MaxRetries             *int   `json:"max_retries,omitempty"`
 	MaxTestRepairs         *int   `json:"max_test_repairs,omitempty"`
@@ -55,12 +56,14 @@ type workspacePolicy struct {
 	MaxFiles       int      `json:"max_files,omitempty"`
 	MaxFileSize    int64    `json:"max_file_size,omitempty"`
 	MaxTotalSize   int64    `json:"max_total_size,omitempty"`
-	RequireChanges bool     `json:"require_changes,omitempty"`
+	RequireChanges *bool    `json:"require_changes,omitempty"`
 }
 
 type taskActionRequest struct {
-	Type    string `json:"type"`
-	Message string `json:"message,omitempty"`
+	Type      string `json:"type"`
+	Message   string `json:"message,omitempty"`
+	RequestID string `json:"request_id,omitempty"`
+	OptionID  string `json:"option_id,omitempty"`
 }
 
 type taskResponse struct {
@@ -115,6 +118,13 @@ func (r createTaskRequest) appRequest() (app.StartTaskRequest, error) {
 	if r.WorkspaceMode != "" && r.WorkspaceMode != "shared" && r.WorkspaceMode != "worktree" {
 		return app.StartTaskRequest{}, errors.New("workspace_mode must be shared or worktree")
 	}
+	requireChanges := prompt != "" && r.Verification.Workspace
+	if r.Verification.WorkspacePolicy.RequireChanges != nil {
+		requireChanges = *r.Verification.WorkspacePolicy.RequireChanges
+	}
+	if requireChanges && !r.Verification.Workspace {
+		return app.StartTaskRequest{}, errors.New("verification.workspace_policy.require_changes requires workspace verification")
+	}
 	policy, err := r.Supervision.appPolicy()
 	if err != nil {
 		return app.StartTaskRequest{}, err
@@ -142,7 +152,7 @@ func (r createTaskRequest) appRequest() (app.StartTaskRequest, error) {
 				MaxFiles:       r.Verification.WorkspacePolicy.MaxFiles,
 				MaxFileSize:    r.Verification.WorkspacePolicy.MaxFileSize,
 				MaxTotalSize:   r.Verification.WorkspacePolicy.MaxTotalSize,
-				RequireChanges: r.Verification.WorkspacePolicy.RequireChanges,
+				RequireChanges: requireChanges,
 			},
 		},
 	}, nil
@@ -162,6 +172,12 @@ func (p *supervisionPolicy) appPolicy() (*supervisor.Policy, error) {
 	}
 	if p.HardTimeout != "" {
 		result.HardTimeout, err = parseDuration(p.HardTimeout, "supervision.hard_timeout")
+		if err != nil {
+			return nil, err
+		}
+	}
+	if p.WaitingTimeout != "" {
+		result.WaitingTimeout, err = parseDuration(p.WaitingTimeout, "supervision.waiting_timeout")
 		if err != nil {
 			return nil, err
 		}

@@ -3,6 +3,7 @@ export type TaskStatus =
   | "running"
   | "recovering"
   | "verifying"
+  | "waiting_permission"
   | "waiting_input"
   | "completed"
   | "failed"
@@ -59,7 +60,7 @@ export interface Task {
   error?: string;
   created_at: string;
   updated_at: string;
-  available_actions?: Array<"interrupt" | "continue" | "finish" | "cancel" | "delete">;
+  available_actions?: Array<"interrupt" | "continue" | "finish" | "cancel" | "delete" | "resolve_permission">;
   links: TaskLinks;
 }
 
@@ -97,15 +98,17 @@ export interface CreateTaskRequest {
   supervision?: {
     idle_timeout?: string;
     hard_timeout?: string;
+    waiting_timeout?: string;
     max_nudges?: number;
     max_retries?: number;
     max_test_repairs?: number;
     max_semantic_redirects?: number;
-		max_semantic_escalations?: number;
+    max_semantic_escalations?: number;
   };
   verification?: {
     workspace?: boolean;
     commands?: Array<{argv: string[]; timeout?: string}>;
+    workspace_policy?: {require_changes?: boolean};
   };
 }
 
@@ -217,6 +220,13 @@ export function finishTask(id: string): Promise<void> {
   });
 }
 
+export function resolvePermission(id: string, requestID: string, optionID: string): Promise<void> {
+  return request<void>(`/api/v1/tasks/${encodeURIComponent(id)}/actions`, {
+    method: "POST",
+    body: JSON.stringify({type: "resolve_permission", request_id: requestID, option_id: optionID})
+  });
+}
+
 export function deleteTask(id: string): Promise<void> {
   return request<void>(`/api/v1/tasks/${encodeURIComponent(id)}`, {method: "DELETE"});
 }
@@ -244,6 +254,7 @@ export const eventTypes = [
   "agent.stderr",
   "agent.disconnected",
   "agent.permission_requested",
+  "agent.permission_resolved",
   "agent.interrupt_requested",
   "agent.follow_up_started",
   "conversation.message",

@@ -18,6 +18,7 @@ const (
 	TaskRunning    TaskStatus = "running"
 	TaskRecovering TaskStatus = "recovering"
 	TaskVerifying  TaskStatus = "verifying"
+	TaskPermission TaskStatus = "waiting_permission"
 	TaskWaiting    TaskStatus = "waiting_input"
 	TaskCompleted  TaskStatus = "completed"
 	TaskFailed     TaskStatus = "failed"
@@ -59,6 +60,7 @@ const (
 	EventAgentStderr         EventType = "agent.stderr"
 	EventAgentDisconnected   EventType = "agent.disconnected"
 	EventAgentPermission     EventType = "agent.permission_requested"
+	EventAgentPermissionDone EventType = "agent.permission_resolved"
 	EventAgentInterrupt      EventType = "agent.interrupt_requested"
 	EventAgentFollowUp       EventType = "agent.follow_up_started"
 	EventConversationMessage EventType = "conversation.message"
@@ -125,5 +127,7 @@ type PermissionOptionData struct {
 }
 
 type AgentPermissionData struct {
-	Options []PermissionOptionData `json:"options"`
+	RequestID string                 `json:"request_id"`
+	Title     string                 `json:"title,omitempty"`
+	Options   []PermissionOptionData `json:"options"`
 }

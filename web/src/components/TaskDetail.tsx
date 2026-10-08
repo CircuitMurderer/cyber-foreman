@@ -14,6 +14,7 @@ import {
   Radio,
   ScrollText,
   ShieldAlert,
+  ShieldCheck,
   TerminalSquare
 } from "lucide-react";
 import {
@@ -23,6 +24,7 @@ import {
   finishTask,
   getTask,
   interruptTask,
+  resolvePermission,
   terminalStatuses,
   type ForemanEvent,
   type Task
@@ -46,6 +48,7 @@ export function TaskDetail({task, onChanged}: TaskDetailProps) {
   const [actionError, setActionError] = useState("");
 
   const metrics = useMemo(() => summarize(events), [events]);
+  const permission = useMemo(() => pendingPermission(events), [events]);
 
   if (!task) {
     return (
@@ -121,6 +124,20 @@ export function TaskDetail({task, onChanged}: TaskDetailProps) {
     }
   }
 
+  async function answerPermission(requestID: string, optionID: string) {
+    if (!task) return;
+    setActing(true);
+    setActionError("");
+    try {
+      await resolvePermission(task.id, requestID, optionID);
+      await refresh();
+    } catch (error) {
+      setActionError(errorMessage(error));
+    } finally {
+      setActing(false);
+    }
+  }
+
   const actions = new Set(task.available_actions ?? []);
   const canInterrupt = actions.has("interrupt") || task.kind === "agent" && task.status === "running";
   const canContinue = actions.has("continue");
@@ -153,6 +170,28 @@ export function TaskDetail({task, onChanged}: TaskDetailProps) {
           <ShieldAlert size={18} />
           <div><strong>任务需要注意</strong><span>{task.error}</span></div>
         </div>
+      )}
+
+      {task.status === "waiting_permission" && permission && (
+        <Card className="permission-card" variant="secondary">
+          <Card.Header>
+            <div><ShieldCheck size={18} /><div><Card.Title>Agent 请求权限</Card.Title><Card.Description>{permission.title || "请选择本次操作的处理方式。"}</Card.Description></div></div>
+          </Card.Header>
+          <Card.Content>
+            <div className="permission-options">
+              {permission.options.map((option) => (
+                <Button
+                  key={option.id}
+                  variant={option.kind.startsWith("allow") ? "primary" : "danger-soft"}
+                  isDisabled={acting}
+                  onPress={() => void answerPermission(permission.requestID, option.id)}
+                >
+                  {option.name || option.id}
+                </Button>
+              ))}
+            </div>
+          </Card.Content>
+        </Card>
       )}
 
       <div className="metric-grid">
@@ -198,7 +237,6 @@ export function TaskDetail({task, onChanged}: TaskDetailProps) {
                     title="结束当前任务？"
                     description="任务会标记为已完成，并关闭当前 Agent session。"
                     confirmLabel="结束任务"
-                    tone="primary"
                     onConfirm={finish}
                     trigger={<ActionOrb label="结束任务" tone="success" disabled={acting}><Check size={19} /></ActionOrb>}
                   />
@@ -365,6 +403,8 @@ function eventSummary(event: ForemanEvent): string {
   if (event.type === "verification.finished") return `${String(data.verifier ?? "")} · ${data.passed ? "通过" : "未通过"}`;
   if (event.type === "agent.stderr") return String(data.line ?? "");
   if (event.type === "agent.output") return String(data.line ?? "");
+  if (event.type === "agent.permission_requested") return String(data.title ?? "Agent 正在等待操作员授权");
+  if (event.type === "agent.permission_resolved") return `已选择 ${String(data.option_id ?? "permission option")}`;
   if (event.type === "conversation.message") return String(data.text ?? "");
   if (event.type === "agent.follow_up_started") return `上一轮：${String(data.stop_reason ?? "cancelled")}`;
   if (event.type === "stream.gap") return String(data.message ?? "事件历史存在缺口，请刷新任务快照");
@@ -397,6 +437,7 @@ function eventLabel(type: string): string {
     "agent.stderr": "Agent stderr",
     "agent.disconnected": "Agent 断联",
     "agent.permission_requested": "权限请求",
+    "agent.permission_resolved": "权限已处理",
     "agent.interrupt_requested": "已请求中断",
     "agent.follow_up_started": "已追加指令",
     "conversation.message": "已发送指令",
@@ -411,6 +452,35 @@ function eventLabel(type: string): string {
     "stream.gap": "事件缺口"
   };
   return labels[type] ?? type;
+}
+
+interface PendingPermission {
+  requestID: string;
+  title: string;
+  options: Array<{id: string; name: string; kind: string}>;
+}
+
+function pendingPermission(events: ForemanEvent[]): PendingPermission | undefined {
+  const resolved = new Set(
+    events
+      .filter((event) => event.type === "agent.permission_resolved")
+      .map((event) => String(asRecord(event.data)?.request_id ?? ""))
+  );
+  for (let index = events.length - 1; index >= 0; index--) {
+    const event = events[index];
+    if (event.type !== "agent.permission_requested") continue;
+    const data = asRecord(event.data);
+    const requestID = String(data?.request_id ?? "");
+    if (!requestID || resolved.has(requestID)) continue;
+    const options = Array.isArray(data?.options)
+      ? data.options.map((value) => asRecord(value)).filter(Boolean).map((option) => ({
+          id: String(option?.id ?? ""), name: String(option?.name ?? ""), kind: String(option?.kind ?? "")
+        })).filter((option) => option.id)
+      : [];
+    if (options.length === 0) continue;
+    return {requestID, title: String(data?.title ?? ""), options};
+  }
+  return undefined;
 }
 
 function eventIcon(type: string) {
