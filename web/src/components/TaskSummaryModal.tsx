@@ -90,6 +90,18 @@ export function TaskSummaryModal({task, events}: TaskSummaryModalProps) {
                 )}
               </section>
 
+              {summary.semanticReview && (
+                <section className="summary-section">
+                  <header><div><ShieldCheck size={16} /><strong>语义复核</strong></div></header>
+                  <div className="summary-checks">
+                    <div className={summary.semanticReview.verdict === "redirect" ? "failed" : "passed"}>
+                      <span>{summary.semanticReview.reason || "辅助模型未提供理由"}</span>
+                      <strong>{semanticVerdictLabel(summary.semanticReview.verdict)}</strong>
+                    </div>
+                  </div>
+                </section>
+              )}
+
               {summary.tools.length > 0 && (
                 <section className="summary-section">
                   <header><div><Wrench size={16} /><strong>最近工具活动</strong></div></header>
@@ -136,6 +148,8 @@ function buildSummary(events: ForemanEvent[]) {
     })
     .filter((value, index, all) => all.indexOf(value) === index)
     .slice(-8);
+  const semanticEvent = [...events].reverse().find((event) => event.type === "supervisor.semantic_review_finished");
+  const semanticData = asRecord(semanticEvent?.data);
   return {
     originalRequest: operatorMessages[0]?.text || "",
     latestResponse: responses.at(-1)?.text || "",
@@ -143,6 +157,16 @@ function buildSummary(events: ForemanEvent[]) {
     toolCalls: toolEvents.length,
     decisions: events.filter((event) => event.type === "supervisor.decision").length,
     verifications,
-    tools
+    tools,
+    semanticReview: semanticData?.success === true ? {
+      verdict: String(semanticData.verdict || "uncertain"),
+      reason: String(semanticData.reason || "")
+    } : undefined
   };
+}
+
+function semanticVerdictLabel(verdict: string): string {
+  if (verdict === "pass") return "通过";
+  if (verdict === "redirect") return "已纠偏";
+  return "不确定";
 }

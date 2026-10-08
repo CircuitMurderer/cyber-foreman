@@ -162,12 +162,14 @@ func serve(ctx context.Context, args []string) error {
 	bus := event.NewBusWithJournal(store)
 	configuredAdapters := []agent.Adapter{processadapter.NewAdapter()}
 	var securityConfig *agentconfig.Security
+	var supervisorConfig *agentconfig.SupervisorConfig
 	if *agentsFile != "" {
 		configuration, loadErr := agentconfig.LoadFile(*agentsFile)
 		if loadErr != nil {
 			return loadErr
 		}
 		securityConfig = configuration.Security
+		supervisorConfig = configuration.Supervisor
 		for _, profile := range configuration.Agents {
 			adapter, adapterErr := agentconfig.Build(profile)
 			if adapterErr != nil {
@@ -250,6 +252,31 @@ func serve(ctx context.Context, args []string) error {
 				return fmt.Errorf("API token environment variable %s is not set", securityConfig.APITokenEnv)
 			}
 			apiToken = strings.TrimSpace(apiToken)
+		}
+	}
+	if supervisorConfig != nil && supervisorConfig.SemanticReview != nil {
+		reviewConfig := supervisorConfig.SemanticReview
+		apiKey := ""
+		reviewerEnabled := true
+		if reviewConfig.APIKeyEnv != "" {
+			value, present := os.LookupEnv(reviewConfig.APIKeyEnv)
+			if !present || strings.TrimSpace(value) == "" {
+				fmt.Fprintf(os.Stderr, "warning: semantic reviewer disabled: environment variable %s is not set\n", reviewConfig.APIKeyEnv)
+				reviewerEnabled = false
+			} else {
+				apiKey = strings.TrimSpace(value)
+			}
+		}
+		if reviewerEnabled {
+			reviewer, reviewerErr := supervisor.NewOpenAIReviewer(supervisor.OpenAIReviewerConfig{
+				BaseURL: reviewConfig.BaseURL, APIKey: apiKey, Model: reviewConfig.Model,
+				Timeout: reviewConfig.TimeoutDuration(),
+			})
+			if reviewerErr != nil {
+				return fmt.Errorf("configure semantic reviewer: %w", reviewerErr)
+			}
+			service.SetSemanticReviewer(reviewer)
+			fmt.Printf("semantic reviewer enabled: openai/%s\n", reviewConfig.Model)
 		}
 	}
 	if err := validateListenerSecurity(*addr, apiToken); err != nil {

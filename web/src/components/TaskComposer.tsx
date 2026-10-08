@@ -28,6 +28,7 @@ export function TaskComposer({adapters, onCreated}: TaskComposerProps) {
   const [maxNudges, setMaxNudges] = useState(2);
   const [maxRetries, setMaxRetries] = useState(2);
   const [maxTestRepairs, setMaxTestRepairs] = useState(2);
+  const [maxSemanticRedirects, setMaxSemanticRedirects] = useState(1);
   const [verifyWorkspace, setVerifyWorkspace] = useState(true);
   const [runTests, setRunTests] = useState(false);
   const [testCommand, setTestCommand] = useState("./scripts/test");
@@ -99,7 +100,8 @@ export function TaskComposer({adapters, onCreated}: TaskComposerProps) {
                 hard_timeout: hardTimeout,
                 max_nudges: maxNudges,
                 max_retries: maxRetries,
-                max_test_repairs: maxTestRepairs
+                max_test_repairs: maxTestRepairs,
+                max_semantic_redirects: maxSemanticRedirects
               }
             }
           : {}),
@@ -234,13 +236,14 @@ export function TaskComposer({adapters, onCreated}: TaskComposerProps) {
             <div className="advanced-panel">
               <div className="advanced-header">
                 <TimerReset size={16} />
-                <div><strong>监督策略</strong><span>控制空转提醒、硬超时和自动恢复预算</span></div>
+                <div><strong>监督策略</strong><span>控制空转提醒、硬超时、自动恢复和语义纠偏预算</span></div>
               </div>
               <Field label="空转超时"><input className="control mono" value={idleTimeout} onChange={(event) => setIdleTimeout(event.target.value)} /></Field>
               <Field label="硬超时"><input className="control mono" value={hardTimeout} onChange={(event) => setHardTimeout(event.target.value)} /></Field>
               <Field label="最大提醒"><input className="control" type="number" min={0} value={maxNudges} onChange={(event) => setMaxNudges(Number(event.target.value))} /></Field>
               <Field label="最大恢复"><input className="control" type="number" min={0} value={maxRetries} onChange={(event) => setMaxRetries(Number(event.target.value))} /></Field>
               <Field label="最大测试修复"><input className="control" type="number" min={0} value={maxTestRepairs} onChange={(event) => setMaxTestRepairs(Number(event.target.value))} /></Field>
+              <Field label="最大语义纠偏"><input className="control" type="number" min={0} value={maxSemanticRedirects} onChange={(event) => setMaxSemanticRedirects(Number(event.target.value))} /></Field>
             </div>
           )}
 

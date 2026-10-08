@@ -9,6 +9,7 @@
 - 明确的任务状态机
 - SQLite 任务仓库、持久 sequence/replay 与实时事件总线
 - 初始确定性监督规则
+- 可选 OpenAI-compatible 语义复核与预算化自动纠偏
 - 本地 HTTP API 和 SSE 事件流
 - React、TypeScript、HeroUI v3 Web 控制台
 - 对话记录弹窗与 Agent 流式 chunk 完整回复聚合
@@ -204,6 +205,32 @@ curl -H "Authorization: Bearer $FOREMAN_API_TOKEN" \
 ```
 
 `GET /healthz`、Web 静态资源和认证入口保持公开，其余 `/api/*` 均要求有效 Cookie 或 Bearer Token。默认监听地址仍是 `127.0.0.1`；若改为通配、局域网或其他非回环地址，Foreman 会强制要求 Token，否则拒绝启动。跨机器访问还应由可信反向代理提供 HTTPS。
+
+### LLM 辅助监督
+
+Foreman 可以在 Agent 每轮结束且确定性 Git/命令验证通过后，再调用一个 OpenAI-compatible 模型做保守的语义复核。确定性规则始终优先：验证失败会直接进入原有修复或人工处理流程，LLM 不能把失败改成通过；LLM 超时、断网、返回非法 JSON 或判断为 `uncertain` 时均 fail-open，不影响原有完成流程。
+
+默认 `config/agents.json` 使用 DeepSeek 做外网验证：
+
+```json
+{
+  "supervisor": {
+    "semantic_review": {
+      "format": "openai",
+      "base_url": "https://api.deepseek.com/v1",
+      "api_key_env": "FOREMAN_AGENT_API_KEY_OPENAI",
+      "model": "deepseek-chat",
+      "timeout": "20s"
+    }
+  }
+}
+```
+
+如果存在 `config/agents.local.json`，`scripts/dev` 会优先读取它；需要把同一个 `supervisor.semantic_review` 配置块加入本地文件才能启用复核。
+
+内网部署只需把 `base_url`、`model` 和 `api_key_env` 换成本地 Qwen 的 OpenAI-compatible 参数；无鉴权端点可以省略 `api_key_env`。如果配置了变量名但变量缺失，Foreman 会输出警告并关闭辅助复核，其余功能继续运行。每个任务的“最大语义纠偏”默认是 1，设为 0 可禁用该任务的自动纠偏；预算用尽后的 LLM 建议只保留在事件记录中，不会形成无限循环。
+
+语义复核只自动发送有界的操作员指令、当前 Agent 可见回复以及确定性验证结论；不会主动读取源码、diff、工具输出、密钥或隐藏思维内容。操作员指令本身若包含代码或敏感信息仍会随请求发送。使用外部模型意味着任务文本和 Agent 回复会离开本机；敏感项目应改用内网模型或关闭该配置。
 
 Codex 会根据 Provider 字段实际建立 session-local API bridge。ACP Agent 的 Provider 字段同时作为选择器元数据和标准 `FOREMAN_PROVIDER_*` 环境传给包装脚本；OpenCode/Grok 当前仍由各自的 provider catalog 决定具体模型别名，`default_model` 应填写 catalog 中存在的名称。
 

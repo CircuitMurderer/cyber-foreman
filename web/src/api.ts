@@ -100,6 +100,7 @@ export interface CreateTaskRequest {
     max_nudges?: number;
     max_retries?: number;
     max_test_repairs?: number;
+    max_semantic_redirects?: number;
   };
   verification?: {
     workspace?: boolean;
@@ -248,6 +249,8 @@ export const eventTypes = [
   "supervisor.decision",
   "supervisor.action_started",
   "supervisor.action_finished",
+  "supervisor.semantic_review_started",
+  "supervisor.semantic_review_finished",
   "verification.started",
   "verification.finished",
   "stream.gap"

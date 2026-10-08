@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"cyber-foreman/internal/agent"
 	"cyber-foreman/internal/agent/acpagent"
@@ -25,8 +26,9 @@ const (
 )
 
 type File struct {
-	Agents   []Profile `json:"agents"`
-	Security *Security `json:"security,omitempty"`
+	Agents     []Profile         `json:"agents"`
+	Security   *Security         `json:"security,omitempty"`
+	Supervisor *SupervisorConfig `json:"supervisor,omitempty"`
 }
 
 // Security contains deployment-wide boundaries. Nil slices mean unrestricted
@@ -35,6 +37,18 @@ type Security struct {
 	WorkspaceRoots   []string   `json:"workspace_roots,omitempty"`
 	CommandAllowlist [][]string `json:"command_allowlist,omitempty"`
 	APITokenEnv      string     `json:"api_token_env,omitempty"`
+}
+
+type SupervisorConfig struct {
+	SemanticReview *SemanticReviewConfig `json:"semantic_review,omitempty"`
+}
+
+type SemanticReviewConfig struct {
+	Format    string `json:"format"`
+	BaseURL   string `json:"base_url"`
+	APIKeyEnv string `json:"api_key_env"`
+	Model     string `json:"model"`
+	Timeout   string `json:"timeout,omitempty"`
 }
 
 type Profile struct {
@@ -103,6 +117,12 @@ func LoadFile(path string) (File, error) {
 			return File{}, fmt.Errorf("security: %w", err)
 		}
 	}
+	if config.Supervisor != nil && config.Supervisor.SemanticReview != nil {
+		config.Supervisor.SemanticReview.normalize()
+		if err := config.Supervisor.SemanticReview.Validate(); err != nil {
+			return File{}, fmt.Errorf("supervisor.semantic_review: %w", err)
+		}
+	}
 	return config, nil
 }
 
@@ -141,6 +161,48 @@ func (s Security) Validate() error {
 		return fmt.Errorf("invalid api_token_env %q", s.APITokenEnv)
 	}
 	return nil
+}
+
+func (c *SemanticReviewConfig) normalize() {
+	c.Format = strings.ToLower(strings.TrimSpace(c.Format))
+	if c.Format == "" {
+		c.Format = FormatOpenAI
+	}
+	c.BaseURL = strings.TrimRight(strings.TrimSpace(c.BaseURL), "/")
+	c.APIKeyEnv = strings.TrimSpace(c.APIKeyEnv)
+	c.Model = strings.TrimSpace(c.Model)
+	c.Timeout = strings.TrimSpace(c.Timeout)
+}
+
+func (c SemanticReviewConfig) Validate() error {
+	if c.Format != FormatOpenAI {
+		return fmt.Errorf("format must be %q", FormatOpenAI)
+	}
+	parsed, err := url.Parse(c.BaseURL)
+	if err != nil || parsed.Scheme == "" || parsed.Host == "" || parsed.User != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") {
+		return errors.New("base_url must be an absolute HTTP(S) URL")
+	}
+	if c.Model == "" {
+		return errors.New("model is required")
+	}
+	if c.APIKeyEnv != "" && !validEnvironmentName(c.APIKeyEnv) {
+		return fmt.Errorf("invalid api_key_env %q", c.APIKeyEnv)
+	}
+	if c.Timeout != "" {
+		timeout, err := time.ParseDuration(c.Timeout)
+		if err != nil || timeout <= 0 {
+			return errors.New("timeout must be a positive duration such as 20s")
+		}
+	}
+	return nil
+}
+
+func (c SemanticReviewConfig) TimeoutDuration() time.Duration {
+	if c.Timeout == "" {
+		return 20 * time.Second
+	}
+	timeout, _ := time.ParseDuration(c.Timeout)
+	return timeout
 }
 
 func (p *Profile) normalize() {

@@ -105,3 +105,41 @@ func TestLoadFileRejectsInvalidSecurity(t *testing.T) {
 		})
 	}
 }
+
+func TestLoadFileIncludesSemanticReviewer(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "agents.json")
+	contents := `{"agents":[{"name":"a","driver":"acp","command":"agent"}],"supervisor":{"semantic_review":{"format":"openai","base_url":"https://api.deepseek.com/v1","api_key_env":"FOREMAN_AGENT_API_KEY_OPENAI","model":"deepseek-chat","timeout":"15s"}}}`
+	if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	config, err := LoadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reviewer := config.Supervisor.SemanticReview
+	if reviewer.Format != FormatOpenAI || reviewer.Model != "deepseek-chat" || reviewer.TimeoutDuration().String() != "15s" {
+		t.Fatalf("semantic reviewer=%#v", reviewer)
+	}
+}
+
+func TestLoadFileRejectsInvalidSemanticReviewer(t *testing.T) {
+	for name, reviewer := range map[string]string{
+		"format":   `{"format":"anthropic","base_url":"https://example.com","api_key_env":"KEY","model":"m"}`,
+		"base":     `{"format":"openai","base_url":"relative","api_key_env":"KEY","model":"m"}`,
+		"userinfo": `{"format":"openai","base_url":"https://user:pass@example.com","api_key_env":"KEY","model":"m"}`,
+		"key env":  `{"format":"openai","base_url":"https://example.com","api_key_env":"BAD=KEY","model":"m"}`,
+		"model":    `{"format":"openai","base_url":"https://example.com","api_key_env":"KEY"}`,
+		"timeout":  `{"format":"openai","base_url":"https://example.com","api_key_env":"KEY","model":"m","timeout":"never"}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "agents.json")
+			contents := `{"agents":[{"name":"a","driver":"acp","command":"agent"}],"supervisor":{"semantic_review":` + reviewer + `}}`
+			if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := LoadFile(path); err == nil {
+				t.Fatal("invalid semantic reviewer was accepted")
+			}
+		})
+	}
+}

@@ -53,5 +53,14 @@
       ["pnpm", "check"]
     ],
     "api_token_env": "FOREMAN_API_TOKEN"
+  },
+  "supervisor": {
+    "semantic_review": {
+      "format": "openai",
+      "base_url": "http://qwen.internal/v1",
+      "api_key_env": "FOREMAN_SUPERVISOR_API_KEY",
+      "model": "qwen3.8",
+      "timeout": "20s"
+    }
   }
 }

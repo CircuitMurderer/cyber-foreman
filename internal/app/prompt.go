@@ -48,6 +48,10 @@ func (s *Service) consumePrompt(ctx context.Context, taskID string, events <-cha
 	var promptGeneration uint64
 	trustedPrompts := make([]domain.ConversationMessageData, 0, 8)
 	replayOnNextPrompt := false
+	var turnResponse strings.Builder
+	turnResponseRunes := 0
+	currentInstruction := ""
+	currentInstructionSource := ""
 	rememberPrompt := func(text, source string) {
 		message := domain.ConversationMessageData{Role: "user", Source: source, Text: text}
 		trustedPrompts = append(trustedPrompts, message)
@@ -57,6 +61,10 @@ func (s *Service) consumePrompt(ctx context.Context, taskID string, events <-cha
 		})
 	}
 	startPrompt := func(displayText, promptText, source string, remember bool) {
+		turnResponse.Reset()
+		turnResponseRunes = 0
+		currentInstruction = displayText
+		currentInstructionSource = source
 		promptActive = true
 		promptGeneration++
 		generation := promptGeneration
@@ -243,6 +251,7 @@ func (s *Service) consumePrompt(ctx context.Context, taskID string, events <-cha
 				return
 			}
 			s.bus.Publish(event)
+			appendBoundedResponse(&turnResponse, &turnResponseRunes, agentResponseChunk(event))
 			sequence++
 			observation, observed := supervisor.ObservationFromEvent(fmt.Sprintf("%s:event:%d", taskID, sequence), event)
 			unexpectedExit := false
@@ -346,6 +355,45 @@ func (s *Service) consumePrompt(ctx context.Context, taskID string, events <-cha
 			snapshot.Status = domain.TaskVerifying
 			report := s.executeVerification(ctx, taskID, runtime)
 			if !report.Required || report.Passed {
+				reviewInstruction := ""
+				if currentInstructionSource == "operator" {
+					reviewInstruction = currentInstruction
+				}
+				if review, reviewed := s.reviewAgentTurn(
+					ctx, taskID, runtime.sessionID, runtime.semanticReview, trustedPrompts,
+					reviewInstruction, turnResponse.String(), report,
+				); reviewed && review.Verdict == supervisor.SemanticRedirect {
+					sequence++
+					decision := supervisor.Decision{
+						RuleID: "semantic-review", Action: supervisor.ActionSemanticRedirect,
+						Reason:     review.Reason,
+						Evidence:   []string{fmt.Sprintf("%s:semantic-review:%d", taskID, sequence)},
+						DedupeKey:  fmt.Sprintf("%s:semantic-review:%d", taskID, promptGeneration),
+						BudgetCost: supervisor.BudgetCost{SemanticRedirects: 1},
+					}
+					next, _, executeErr := executor.Execute(ctx, snapshot, decision, noOpPerformer{supervisor.ActionSemanticRedirect: true})
+					if executeErr == nil {
+						snapshot = next
+						if err := s.transition(taskID, domain.TaskRunning, "semantic reviewer requested a correction"); err != nil {
+							return
+						}
+						snapshot.Status = domain.TaskRunning
+						s.bus.Publish(domain.Event{
+							TaskID: taskID, SessionID: runtime.sessionID, Type: domain.EventAgentFollowUp,
+							Timestamp: time.Now().UTC(), Data: map[string]any{
+								"stop_reason": "semantic_redirect", "rule_id": decision.RuleID,
+							},
+						})
+						followUp := semanticRedirectPrompt(review)
+						startPrompt(followUp, followUp, "supervisor", true)
+						idleC = resetTaskTimer(idleTimer, nextIdleDelay(snapshot))
+						continue
+					}
+					if !errors.Is(executeErr, supervisor.ErrBudgetExceeded) {
+						_ = s.requireAttention(taskID, "semantic reviewer action failed: "+executeErr.Error())
+						return
+					}
+				}
 				s.finishVerification(taskID, runtime, report)
 				if runtime.interactive {
 					current, err := s.GetTask(taskID)

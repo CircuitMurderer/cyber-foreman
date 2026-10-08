@@ -41,24 +41,26 @@ type VerificationData struct {
 }
 
 type Policy struct {
-	IdleTimeout    time.Duration `json:"idle_timeout"`
-	HardTimeout    time.Duration `json:"hard_timeout"`
-	MaxNudges      int           `json:"max_nudges"`
-	MaxRetries     int           `json:"max_retries"`
-	MaxTestRepairs int           `json:"max_test_repairs"`
+	IdleTimeout          time.Duration `json:"idle_timeout"`
+	HardTimeout          time.Duration `json:"hard_timeout"`
+	MaxNudges            int           `json:"max_nudges"`
+	MaxRetries           int           `json:"max_retries"`
+	MaxTestRepairs       int           `json:"max_test_repairs"`
+	MaxSemanticRedirects int           `json:"max_semantic_redirects"`
 }
 
 func DefaultPolicy() Policy {
 	return Policy{
 		IdleTimeout: 90 * time.Second, HardTimeout: 30 * time.Minute,
-		MaxNudges: 2, MaxRetries: 2, MaxTestRepairs: 2,
+		MaxNudges: 2, MaxRetries: 2, MaxTestRepairs: 2, MaxSemanticRedirects: 1,
 	}
 }
 
 type Budget struct {
-	Nudges      int `json:"nudges"`
-	Retries     int `json:"retries"`
-	TestRepairs int `json:"test_repairs"`
+	Nudges            int `json:"nudges"`
+	Retries           int `json:"retries"`
+	TestRepairs       int `json:"test_repairs"`
+	SemanticRedirects int `json:"semantic_redirects"`
 }
 
 type VerificationState struct {
@@ -88,6 +90,7 @@ const (
 	ActionCancelAndFollowUp Action = "cancel_and_follow_up"
 	ActionRetrySession      Action = "retry_session"
 	ActionRepair            Action = "repair"
+	ActionSemanticRedirect  Action = "semantic_redirect"
 	ActionStartVerification Action = "start_verification"
 	ActionComplete          Action = "complete"
 	ActionAttentionRequired Action = "attention_required"
@@ -95,9 +98,10 @@ const (
 )
 
 type BudgetCost struct {
-	Nudges      int `json:"nudges,omitempty"`
-	Retries     int `json:"retries,omitempty"`
-	TestRepairs int `json:"test_repairs,omitempty"`
+	Nudges            int `json:"nudges,omitempty"`
+	Retries           int `json:"retries,omitempty"`
+	TestRepairs       int `json:"test_repairs,omitempty"`
+	SemanticRedirects int `json:"semantic_redirects,omitempty"`
 }
 
 type Decision struct {

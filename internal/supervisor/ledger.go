@@ -15,7 +15,8 @@ func ApplyDecision(snapshot Snapshot, decision Decision) (next Snapshot, duplica
 	}
 	if snapshot.Budget.Nudges+decision.BudgetCost.Nudges > snapshot.Policy.MaxNudges ||
 		snapshot.Budget.Retries+decision.BudgetCost.Retries > snapshot.Policy.MaxRetries ||
-		snapshot.Budget.TestRepairs+decision.BudgetCost.TestRepairs > snapshot.Policy.MaxTestRepairs {
+		snapshot.Budget.TestRepairs+decision.BudgetCost.TestRepairs > snapshot.Policy.MaxTestRepairs ||
+		snapshot.Budget.SemanticRedirects+decision.BudgetCost.SemanticRedirects > snapshot.Policy.MaxSemanticRedirects {
 		return snapshot, false, ErrBudgetExceeded
 	}
 
@@ -28,5 +29,6 @@ func ApplyDecision(snapshot Snapshot, decision Decision) (next Snapshot, duplica
 	next.Budget.Nudges += decision.BudgetCost.Nudges
 	next.Budget.Retries += decision.BudgetCost.Retries
 	next.Budget.TestRepairs += decision.BudgetCost.TestRepairs
+	next.Budget.SemanticRedirects += decision.BudgetCost.SemanticRedirects
 	return next, false, nil
 }

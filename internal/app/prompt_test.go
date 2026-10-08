@@ -309,6 +309,129 @@ func TestPromptTaskStopsAfterTestRepairBudgetIsExhausted(t *testing.T) {
 	}
 }
 
+func TestSemanticReviewerRedirectsOnlyAfterDeterministicVerification(t *testing.T) {
+	adapter := newPromptTestAdapter(promptModeCompleteEveryTurnDelayed)
+	reviewer := &scriptedSemanticReviewer{reviews: []supervisor.SemanticReview{
+		{Verdict: supervisor.SemanticRedirect, Reason: "the required check was not reported", FollowUp: "Run the required check and report its result."},
+		{Verdict: supervisor.SemanticPass, Reason: "the correction addresses the task"},
+	}}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	bus := event.NewBus()
+	events := bus.Subscribe(ctx, 128)
+	service := NewService(ctx, adapter, bus)
+	service.SetSemanticReviewer(reviewer)
+	policy := supervisor.DefaultPolicy()
+	task, err := service.StartTask(StartTaskRequest{
+		Prompt: "implement and verify the feature", CWD: t.TempDir(), Supervision: &policy,
+		Verification: VerificationRequest{Commands: []verification.Command{{
+			Argv: []string{"sh", "-c", "exit 0"}, Timeout: time.Second,
+		}}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	final := waitForTerminalTask(t, service, task.ID)
+	if final.Status != domain.TaskCompleted {
+		t.Fatalf("unexpected final task: %#v", final)
+	}
+	prompts := adapter.recordedPrompts()
+	if len(prompts) != 2 || !strings.Contains(prompts[1], "Run the required check") {
+		t.Fatalf("semantic redirect prompts=%#v", prompts)
+	}
+	if reviewer.callCount() != 2 {
+		t.Fatalf("review calls=%d, want 2", reviewer.callCount())
+	}
+	redirects := 0
+	reviews := 0
+	for {
+		select {
+		case event := <-events:
+			if event.TaskID != task.ID {
+				continue
+			}
+			if event.Type == domain.EventSemanticReviewEnd {
+				reviews++
+			}
+			if event.Type == domain.EventSupervisorDecision {
+				if decision, ok := event.Data.(supervisor.Decision); ok && decision.Action == supervisor.ActionSemanticRedirect {
+					redirects++
+				}
+			}
+		default:
+			if reviews != 2 || redirects != 1 {
+				t.Fatalf("semantic reviews=%d redirects=%d", reviews, redirects)
+			}
+			return
+		}
+	}
+}
+
+func TestSemanticReviewerFailureIsFailOpen(t *testing.T) {
+	adapter := newPromptTestAdapter(promptModeCompleteEveryTurnDelayed)
+	reviewer := &scriptedSemanticReviewer{err: errors.New("model endpoint unavailable")}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	service := NewService(ctx, adapter, event.NewBus())
+	service.SetSemanticReviewer(reviewer)
+	task, err := service.StartTask(StartTaskRequest{Prompt: "do work", CWD: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	final := waitForTerminalTask(t, service, task.ID)
+	if final.Status != domain.TaskCompleted || len(adapter.recordedPrompts()) != 1 {
+		t.Fatalf("semantic failure changed deterministic result: task=%#v prompts=%#v", final, adapter.recordedPrompts())
+	}
+}
+
+func TestSemanticReviewerRedirectBudgetExhaustionIsFailOpen(t *testing.T) {
+	adapter := newPromptTestAdapter(promptModeCompleteEveryTurnDelayed)
+	reviewer := &scriptedSemanticReviewer{reviews: []supervisor.SemanticReview{
+		{Verdict: supervisor.SemanticRedirect, Reason: "first concern", FollowUp: "Correct the first concern."},
+		{Verdict: supervisor.SemanticRedirect, Reason: "second concern", FollowUp: "Correct the second concern."},
+	}}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	service := NewService(ctx, adapter, event.NewBus())
+	service.SetSemanticReviewer(reviewer)
+	policy := supervisor.DefaultPolicy()
+	policy.MaxSemanticRedirects = 1
+	task, err := service.StartTask(StartTaskRequest{Prompt: "do work", CWD: t.TempDir(), Supervision: &policy})
+	if err != nil {
+		t.Fatal(err)
+	}
+	final := waitForTerminalTask(t, service, task.ID)
+	if final.Status != domain.TaskCompleted || len(adapter.recordedPrompts()) != 2 || reviewer.callCount() != 2 {
+		t.Fatalf("budget exhaustion did not fail open: task=%#v prompts=%#v reviews=%d", final, adapter.recordedPrompts(), reviewer.callCount())
+	}
+}
+
+func TestSemanticReviewerCannotOverrideFailedVerification(t *testing.T) {
+	adapter := newPromptTestAdapter(promptModeCompleteEveryTurnDelayed)
+	reviewer := &scriptedSemanticReviewer{reviews: []supervisor.SemanticReview{{
+		Verdict: supervisor.SemanticPass, Reason: "looks fine",
+	}}}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	service := NewService(ctx, adapter, event.NewBus())
+	service.SetSemanticReviewer(reviewer)
+	policy := supervisor.DefaultPolicy()
+	policy.MaxTestRepairs = 0
+	task, err := service.StartTask(StartTaskRequest{
+		Prompt: "do work", CWD: t.TempDir(), Supervision: &policy,
+		Verification: VerificationRequest{Commands: []verification.Command{{
+			Argv: []string{"sh", "-c", "exit 1"}, Timeout: time.Second,
+		}}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	final := waitForTerminalTask(t, service, task.ID)
+	if final.Status != domain.TaskAttention || reviewer.callCount() != 0 {
+		t.Fatalf("semantic reviewer overrode deterministic failure: task=%#v reviews=%d", final, reviewer.callCount())
+	}
+}
+
 func TestPromptTaskRebuildsDisconnectedSessionAndReplaysTrustedContext(t *testing.T) {
 	adapter := newDisconnectingPromptAdapter(false)
 	ctx, cancel := context.WithCancel(context.Background())
@@ -495,6 +618,7 @@ const (
 	promptModeNeverComplete
 	promptModeMessageThenComplete
 	promptModeCompleteEveryTurn
+	promptModeCompleteEveryTurnDelayed
 )
 
 type promptTestAdapter struct {
@@ -656,10 +780,13 @@ func (a *promptTestAdapter) Prompt(ctx context.Context, _ string, req agent.Prom
 	a.prompts = append(a.prompts, req.Text)
 	a.promptMu.Unlock()
 	call := a.promptCalls.Add(1)
-	if a.mode == promptModeCompleteEveryTurn {
+	if a.mode == promptModeCompleteEveryTurn || a.mode == promptModeCompleteEveryTurnDelayed {
 		a.events <- domain.Event{
 			TaskID: a.taskID, SessionID: "session-test", Type: domain.EventAgentSessionUpdate, Timestamp: time.Now().UTC(),
 			Data: domain.AgentSessionUpdateData{Update: []byte(`{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"done"}}`)},
+		}
+		if a.mode == promptModeCompleteEveryTurnDelayed {
+			time.Sleep(10 * time.Millisecond)
 		}
 		return agent.PromptResult{StopReason: "end_turn"}, nil
 	}
@@ -732,4 +859,39 @@ func (a *promptTestAdapter) recordedPrompts() []string {
 	a.promptMu.Lock()
 	defer a.promptMu.Unlock()
 	return append([]string(nil), a.prompts...)
+}
+
+type scriptedSemanticReviewer struct {
+	mu      sync.Mutex
+	reviews []supervisor.SemanticReview
+	err     error
+	calls   int
+}
+
+func (r *scriptedSemanticReviewer) Descriptor() supervisor.SemanticReviewerDescriptor {
+	return supervisor.SemanticReviewerDescriptor{Provider: "test", Model: "reviewer"}
+}
+
+func (r *scriptedSemanticReviewer) Review(_ context.Context, request supervisor.SemanticReviewRequest) (supervisor.SemanticReview, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.calls++
+	if request.AgentResponse == "" {
+		return supervisor.SemanticReview{}, errors.New("agent response was empty")
+	}
+	if r.err != nil {
+		return supervisor.SemanticReview{}, r.err
+	}
+	if len(r.reviews) == 0 {
+		return supervisor.SemanticReview{Verdict: supervisor.SemanticUncertain, Reason: "no scripted result"}, nil
+	}
+	review := r.reviews[0]
+	r.reviews = r.reviews[1:]
+	return review, nil
+}
+
+func (r *scriptedSemanticReviewer) callCount() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.calls
 }

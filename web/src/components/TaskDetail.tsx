@@ -353,6 +353,11 @@ function eventSummary(event: ForemanEvent): string {
   if (event.type === "task.state") return `${String(data.from ?? "")} → ${String(data.to ?? "")}${data.reason ? ` · ${String(data.reason)}` : ""}`;
   if (event.type === "supervisor.decision") return `${String(data.action ?? "decision")} · ${String(data.reason ?? "")}`;
   if (event.type === "supervisor.action_finished") return data.success ? "动作执行成功" : `动作失败：${String(data.error ?? "unknown")}`;
+  if (event.type === "supervisor.semantic_review_started") return `${String(data.provider ?? "openai")} · ${String(data.model ?? "")}`;
+  if (event.type === "supervisor.semantic_review_finished") {
+    if (data.success === false) return `辅助复核失败，已按确定性结果继续：${String(data.error ?? "unknown")}`;
+    return `${String(data.verdict ?? "uncertain")} · ${String(data.reason ?? "")}`;
+  }
   if (event.type === "verification.started") return `开始 ${String(data.verifier ?? "")} 验证`;
   if (event.type === "verification.finished") return `${String(data.verifier ?? "")} · ${data.passed ? "通过" : "未通过"}`;
   if (event.type === "agent.stderr") return String(data.line ?? "");
@@ -391,6 +396,8 @@ function eventLabel(type: string): string {
     "supervisor.decision": "监工决策",
     "supervisor.action_started": "开始执行动作",
     "supervisor.action_finished": "动作执行完成",
+    "supervisor.semantic_review_started": "开始语义复核",
+    "supervisor.semantic_review_finished": "语义复核完成",
     "verification.started": "开始验证",
     "verification.finished": "验证完成",
     "stream.gap": "事件缺口"

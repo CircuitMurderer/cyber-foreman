@@ -33,3 +33,17 @@ func TestApplyDecisionRejectsBudgetOverflow(t *testing.T) {
 		t.Fatalf("error = %v, want ErrBudgetExceeded", err)
 	}
 }
+
+func TestApplyDecisionChargesSemanticRedirectBudget(t *testing.T) {
+	policy := DefaultPolicy()
+	snapshot := Snapshot{Policy: policy}
+	decision := Decision{DedupeKey: "semantic-1", BudgetCost: BudgetCost{SemanticRedirects: 1}}
+	next, duplicate, err := ApplyDecision(snapshot, decision)
+	if err != nil || duplicate || next.Budget.SemanticRedirects != 1 {
+		t.Fatalf("first semantic redirect = %#v, duplicate %v, err %v", next, duplicate, err)
+	}
+	_, _, err = ApplyDecision(next, Decision{DedupeKey: "semantic-2", BudgetCost: BudgetCost{SemanticRedirects: 1}})
+	if !errors.Is(err, ErrBudgetExceeded) {
+		t.Fatalf("second semantic redirect error = %v, want ErrBudgetExceeded", err)
+	}
+}

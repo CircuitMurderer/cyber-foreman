@@ -388,6 +388,7 @@ select.control { appearance: auto; }
 .summary-empty { padding: 18px 13px; color: var(--subtle); font-size: 11px; }
 .summary-checks { display: grid; gap: 1px; }
 .summary-checks > div { display: flex; justify-content: space-between; gap: 12px; padding: 10px 13px; border-bottom: 1px solid var(--line); font-size: 10px; }
+.summary-checks > div span { min-width: 0; overflow-wrap: anywhere; }
 .summary-checks > div:last-child { border-bottom: 0; }
 .summary-checks .passed strong { color: var(--success); }
 .summary-checks .failed strong { color: var(--danger); }

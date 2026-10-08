@@ -69,6 +69,7 @@ type Service struct {
 	bus            *event.Bus
 	store          storage.TaskStore
 	requestPolicy  RequestPolicy
+	semanticReview supervisor.SemanticReviewer
 
 	mu       sync.RWMutex
 	tasks    map[string]*domain.Task
@@ -81,19 +82,26 @@ func (s *Service) SetRequestPolicy(policy RequestPolicy) {
 	s.requestPolicy = policy
 }
 
+// SetSemanticReviewer installs an optional, fail-open reviewer. Deterministic
+// verification remains authoritative and always runs before semantic review.
+func (s *Service) SetSemanticReviewer(reviewer supervisor.SemanticReviewer) {
+	s.semanticReview = reviewer
+}
+
 type taskRuntime struct {
-	adapter       agent.Adapter
-	sessionID     string
-	startRequest  agent.StartRequest
-	model         string
-	cancel        context.CancelFunc
-	actions       chan taskAction
-	verification  VerificationRequest
-	baseline      *verification.WorkspaceBaseline
-	prompt        string
-	interruptWith string
-	interactive   bool
-	policy        supervisor.Policy
+	adapter        agent.Adapter
+	sessionID      string
+	startRequest   agent.StartRequest
+	model          string
+	cancel         context.CancelFunc
+	actions        chan taskAction
+	verification   VerificationRequest
+	baseline       *verification.WorkspaceBaseline
+	prompt         string
+	interruptWith  string
+	interactive    bool
+	policy         supervisor.Policy
+	semanticReview supervisor.SemanticReviewer
 }
 
 type taskAction struct {
@@ -367,6 +375,7 @@ func (s *Service) startQueuedTask(taskID string, req StartTaskRequest, adapter a
 		model:        model, cancel: cancel, actions: make(chan taskAction, 1),
 		verification: cloneVerificationRequest(req.Verification), baseline: baseline,
 		prompt: req.Prompt, interruptWith: req.InterruptWith, interactive: req.Interactive, policy: policy,
+		semanticReview: s.semanticReview,
 	}
 	s.mu.Unlock()
 	if err := s.transition(t.ID, domain.TaskRunning, "agent process started"); err != nil {

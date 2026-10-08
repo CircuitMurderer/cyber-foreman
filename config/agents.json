@@ -41,5 +41,14 @@
         "api_key_env": "FOREMAN_AGENT_API_KEY_OPENAI"
       }
     }
-  ]
+  ],
+  "supervisor": {
+    "semantic_review": {
+      "format": "openai",
+      "base_url": "https://api.deepseek.com/v1",
+      "api_key_env": "FOREMAN_AGENT_API_KEY_OPENAI",
+      "model": "deepseek-chat",
+      "timeout": "20s"
+    }
+  }
 }
