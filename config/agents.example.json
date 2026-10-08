@@ -44,5 +44,14 @@
         "api_key_env": "FOREMAN_AGENT_API_KEY_OPENAI"
       }
     }
-  ]
+  ],
+  "security": {
+    "workspace_roots": ["/absolute/path/to"],
+    "command_allowlist": [
+      ["./scripts/test"],
+      ["go", "test"],
+      ["pnpm", "check"]
+    ],
+    "api_token_env": "FOREMAN_API_TOKEN"
+  }
 }

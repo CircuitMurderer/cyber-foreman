@@ -242,6 +242,84 @@ func TestUnavailableAdapterIsListedButRejectsTasks(t *testing.T) {
 	}
 }
 
+func TestAPITokenProtectsControlPlaneAndCreatesBrowserSession(t *testing.T) {
+	service, bus := newAPITestService(t)
+	handler := NewServerWithOptions(service, bus, ServerOptions{APIToken: "test-token"}).Handler()
+
+	unauthorized := httptest.NewRecorder()
+	handler.ServeHTTP(unauthorized, httptest.NewRequest(http.MethodGet, "/api/v1/tasks", nil))
+	if unauthorized.Code != http.StatusUnauthorized || unauthorized.Header().Get("WWW-Authenticate") == "" {
+		t.Fatalf("unauthorized status=%d headers=%v body=%s", unauthorized.Code, unauthorized.Header(), unauthorized.Body.String())
+	}
+
+	health := httptest.NewRecorder()
+	handler.ServeHTTP(health, httptest.NewRequest(http.MethodGet, "/healthz", nil))
+	if health.Code != http.StatusOK {
+		t.Fatalf("health status=%d", health.Code)
+	}
+
+	status := httptest.NewRecorder()
+	handler.ServeHTTP(status, httptest.NewRequest(http.MethodGet, "/api/v1/auth", nil))
+	if status.Code != http.StatusOK || !strings.Contains(status.Body.String(), `"required":true`) || !strings.Contains(status.Body.String(), `"authenticated":false`) {
+		t.Fatalf("auth status=%d body=%s", status.Code, status.Body.String())
+	}
+
+	badLogin := httptest.NewRecorder()
+	badRequest := httptest.NewRequest(http.MethodPost, "/api/v1/auth/session", strings.NewReader(`{"token":"wrong"}`))
+	handler.ServeHTTP(badLogin, badRequest)
+	if badLogin.Code != http.StatusUnauthorized {
+		t.Fatalf("bad login status=%d body=%s", badLogin.Code, badLogin.Body.String())
+	}
+
+	login := httptest.NewRecorder()
+	loginRequest := httptest.NewRequest(http.MethodPost, "/api/v1/auth/session", strings.NewReader(`{"token":"test-token"}`))
+	handler.ServeHTTP(login, loginRequest)
+	if login.Code != http.StatusOK || len(login.Result().Cookies()) != 1 || login.Result().Cookies()[0].Value == "test-token" {
+		t.Fatalf("login status=%d cookies=%v body=%s", login.Code, login.Result().Cookies(), login.Body.String())
+	}
+	if cookie := login.Result().Cookies()[0]; !cookie.HttpOnly || cookie.SameSite != http.SameSiteStrictMode {
+		t.Fatalf("unsafe session cookie: %#v", cookie)
+	}
+
+	authorized := httptest.NewRecorder()
+	authorizedRequest := httptest.NewRequest(http.MethodGet, "/api/v1/tasks", nil)
+	authorizedRequest.AddCookie(login.Result().Cookies()[0])
+	handler.ServeHTTP(authorized, authorizedRequest)
+	if authorized.Code != http.StatusOK {
+		t.Fatalf("cookie auth status=%d body=%s", authorized.Code, authorized.Body.String())
+	}
+
+	bearer := httptest.NewRecorder()
+	bearerRequest := httptest.NewRequest(http.MethodGet, "/api/v1/tasks", nil)
+	bearerRequest.Header.Set("Authorization", "Bearer test-token")
+	handler.ServeHTTP(bearer, bearerRequest)
+	if bearer.Code != http.StatusOK {
+		t.Fatalf("bearer auth status=%d body=%s", bearer.Code, bearer.Body.String())
+	}
+}
+
+func TestTaskPolicyDenialReturnsForbidden(t *testing.T) {
+	service, bus := newAPITestService(t)
+	service.SetRequestPolicy(denyAllPolicy{})
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/tasks", strings.NewReader(
+		`{"adapter":"test","workspace":"/tmp","input":{"command":["ignored"]}}`,
+	))
+	recorder := httptest.NewRecorder()
+	NewServer(service, bus).Handler().ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusForbidden || !strings.Contains(recorder.Body.String(), "task_forbidden") {
+		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	if tasks := service.ListTasks(); len(tasks) != 0 {
+		t.Fatalf("forbidden task was persisted: %#v", tasks)
+	}
+}
+
+type denyAllPolicy struct{}
+
+func (denyAllPolicy) AuthorizeTask(app.TaskAuthorization) error {
+	return app.ErrTaskForbidden
+}
+
 func newAPITestService(t *testing.T) (*app.Service, *event.Bus) {
 	t.Helper()
 	registry, err := agent.NewRegistry(apiTestAdapter{})

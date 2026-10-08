@@ -1,7 +1,8 @@
 import {useCallback, useEffect, useMemo, useState} from "react";
 import {Button, Chip} from "@heroui/react";
 import {Activity, Bot, PanelLeftClose, PanelLeftOpen, ShieldCheck, Wifi, WifiOff} from "lucide-react";
-import {deleteTask, errorMessage, getAdapters, getTasks, type AdapterDescriptor, type Task} from "./api";
+import {ApiError, createAuthSession, deleteTask, errorMessage, getAdapters, getAuthStatus, getTasks, type AdapterDescriptor, type Task} from "./api";
+import {AuthScreen} from "./components/AuthScreen";
 import {TaskComposer} from "./components/TaskComposer";
 import {TaskDetail} from "./components/TaskDetail";
 import {TaskList} from "./components/TaskList";
@@ -14,6 +15,9 @@ export function App() {
   const [connected, setConnected] = useState(false);
   const [error, setError] = useState("");
   const [sidebarOpen, setSidebarOpen] = useState(true);
+  const [authChecked, setAuthChecked] = useState(false);
+  const [authRequired, setAuthRequired] = useState(false);
+  const [authenticated, setAuthenticated] = useState(false);
 
   const loadTasks = useCallback(async (silent = false) => {
     if (!silent) setLoading(true);
@@ -26,6 +30,7 @@ export function App() {
       setSelectedID((current) => current ?? nextTasks[0]?.id);
     } catch (caught) {
       setConnected(false);
+      if (caught instanceof ApiError && caught.status === 401) setAuthenticated(false);
       if (!silent) setError(errorMessage(caught));
     } finally {
       if (!silent) setLoading(false);
@@ -34,8 +39,16 @@ export function App() {
 
   useEffect(() => {
     let active = true;
-    void Promise.all([getAdapters(), getTasks()])
-      .then(([nextAdapters, nextTasks]) => {
+    void getAuthStatus()
+      .then(async (auth) => {
+        if (!active) return;
+        setAuthRequired(auth.required);
+        setAuthenticated(auth.authenticated);
+        if (!auth.authenticated) {
+          setLoading(false);
+          return;
+        }
+        const [nextAdapters, nextTasks] = await Promise.all([getAdapters(), getTasks()]);
         if (!active) return;
         setAdapters(nextAdapters);
         setTasks(nextTasks);
@@ -48,14 +61,19 @@ export function App() {
         setError(errorMessage(caught));
         setConnected(false);
       })
-      .finally(() => active && setLoading(false));
+      .finally(() => {
+        if (!active) return;
+        setAuthChecked(true);
+        setLoading(false);
+      });
     return () => { active = false; };
   }, []);
 
   useEffect(() => {
+    if (!authenticated) return;
     const timer = window.setInterval(() => void loadTasks(true), 2500);
     return () => window.clearInterval(timer);
-  }, [loadTasks]);
+  }, [authenticated, loadTasks]);
 
   const selectedTask = tasks.find((task) => task.id === selectedID);
   const activeCount = useMemo(() => tasks.filter((task) => ["queued", "running", "recovering", "verifying"].includes(task.status)).length, [tasks]);
@@ -82,6 +100,30 @@ export function App() {
     } catch (caught) {
       setError(errorMessage(caught));
     }
+  }
+
+  async function handleAuthenticate(token: string) {
+    await createAuthSession(token);
+    setLoading(true);
+    try {
+      const [nextAdapters, nextTasks] = await Promise.all([getAdapters(), getTasks()]);
+      setAdapters(nextAdapters);
+      setTasks(nextTasks);
+      setSelectedID((current) => current ?? nextTasks[0]?.id);
+      setConnected(true);
+      setError("");
+      setAuthenticated(true);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  if (!authChecked) {
+    return <AuthScreen loading />;
+  }
+
+  if (authRequired && !authenticated) {
+    return <AuthScreen onAuthenticate={handleAuthenticate} />;
   }
 
   return (

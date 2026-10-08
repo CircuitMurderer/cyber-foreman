@@ -71,3 +71,37 @@ func TestGoogleCodexUsesChatCompatibility(t *testing.T) {
 		t.Fatalf("metadata=%#v", metadata)
 	}
 }
+
+func TestLoadFileIncludesSecurityBoundaries(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "agents.json")
+	contents := `{"agents":[{"name":"a","driver":"acp","command":"agent"}],"security":{"workspace_roots":["/srv/code"],"command_allowlist":[["go","test"],["./scripts/test"]],"api_token_env":"FOREMAN_API_TOKEN"}}`
+	if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	config, err := LoadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if config.Security == nil || config.Security.APITokenEnv != "FOREMAN_API_TOKEN" || len(config.Security.CommandAllowlist) != 2 {
+		t.Fatalf("security=%#v", config.Security)
+	}
+}
+
+func TestLoadFileRejectsInvalidSecurity(t *testing.T) {
+	for name, security := range map[string]string{
+		"relative-root": `{"workspace_roots":["relative"]}`,
+		"empty-prefix":  `{"command_allowlist":[[]]}`,
+		"invalid-env":   `{"api_token_env":"BAD=TOKEN"}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "agents.json")
+			contents := `{"agents":[{"name":"a","driver":"acp","command":"agent"}],"security":` + security + `}`
+			if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := LoadFile(path); err == nil {
+				t.Fatal("invalid security configuration was accepted")
+			}
+		})
+	}
+}

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -14,6 +15,7 @@ import (
 	"syscall"
 	"time"
 
+	"cyber-foreman/internal/access"
 	"cyber-foreman/internal/agent"
 	"cyber-foreman/internal/agent/acpagent"
 	codexadapter "cyber-foreman/internal/agent/codex"
@@ -159,12 +161,14 @@ func serve(ctx context.Context, args []string) error {
 	defer store.Close()
 	bus := event.NewBusWithJournal(store)
 	configuredAdapters := []agent.Adapter{processadapter.NewAdapter()}
+	var securityConfig *agentconfig.Security
 	if *agentsFile != "" {
-		profiles, loadErr := agentconfig.Load(*agentsFile)
+		configuration, loadErr := agentconfig.LoadFile(*agentsFile)
 		if loadErr != nil {
 			return loadErr
 		}
-		for _, profile := range profiles {
+		securityConfig = configuration.Security
+		for _, profile := range configuration.Agents {
 			adapter, adapterErr := agentconfig.Build(profile)
 			if adapterErr != nil {
 				return fmt.Errorf("configure agent %q: %w", profile.Name, adapterErr)
@@ -229,6 +233,28 @@ func serve(ctx context.Context, args []string) error {
 	if err != nil {
 		return fmt.Errorf("restore control plane: %w", err)
 	}
+	apiToken := ""
+	if securityConfig != nil {
+		policy, policyErr := access.NewPolicy(access.Config{
+			WorkspaceRoots: securityConfig.WorkspaceRoots, RestrictWorkspace: securityConfig.WorkspaceRoots != nil,
+			CommandAllowlist: securityConfig.CommandAllowlist, RestrictCommands: securityConfig.CommandAllowlist != nil,
+		})
+		if policyErr != nil {
+			return fmt.Errorf("configure task access policy: %w", policyErr)
+		}
+		service.SetRequestPolicy(policy)
+		if securityConfig.APITokenEnv != "" {
+			var present bool
+			apiToken, present = os.LookupEnv(securityConfig.APITokenEnv)
+			if !present || strings.TrimSpace(apiToken) == "" {
+				return fmt.Errorf("API token environment variable %s is not set", securityConfig.APITokenEnv)
+			}
+			apiToken = strings.TrimSpace(apiToken)
+		}
+	}
+	if err := validateListenerSecurity(*addr, apiToken); err != nil {
+		return err
+	}
 	var frontend []http.Handler
 	if *webDir != "" {
 		webHandler, webErr := api.NewSPAHandler(*webDir)
@@ -241,7 +267,15 @@ func serve(ctx context.Context, args []string) error {
 			frontend = append(frontend, webHandler)
 		}
 	}
-	server := &http.Server{Addr: *addr, Handler: api.NewServer(service, bus, frontend...).Handler(), ReadHeaderTimeout: 5 * time.Second}
+	var frontendHandler http.Handler
+	if len(frontend) > 0 {
+		frontendHandler = frontend[0]
+	}
+	server := &http.Server{
+		Addr:              *addr,
+		Handler:           api.NewServerWithOptions(service, bus, api.ServerOptions{Frontend: frontendHandler, APIToken: apiToken}).Handler(),
+		ReadHeaderTimeout: 5 * time.Second,
+	}
 
 	shutdownDone := make(chan struct{})
 	go func() {
@@ -259,6 +293,21 @@ func serve(ctx context.Context, args []string) error {
 	}
 	<-shutdownDone
 	return nil
+}
+
+func validateListenerSecurity(addr, apiToken string) error {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		return fmt.Errorf("invalid HTTP listen address %q: %w", addr, err)
+	}
+	if strings.TrimSpace(apiToken) != "" || strings.EqualFold(host, "localhost") {
+		return nil
+	}
+	ip := net.ParseIP(host)
+	if ip != nil && ip.IsLoopback() {
+		return nil
+	}
+	return fmt.Errorf("refusing unauthenticated non-loopback listener %q: configure security.api_token_env", addr)
 }
 
 func defaultOpenCodeCommand() string {

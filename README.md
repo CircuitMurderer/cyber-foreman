@@ -170,6 +170,41 @@ cp config/agents.example.json config/agents.local.json
 - `provider.wire_api`：Codex 的 OpenAI Provider 可选 `chat-completions` 或 `responses`
 - `auth_methods`、`auth_optional`：ACP 登录方法及 BYOK 回退策略
 
+### 部署安全边界
+
+同一个配置文件可选地声明 `security`。没有 `security` 时保持本地开发的兼容行为；生产或内网共享部署建议显式配置：
+
+```json
+{
+  "security": {
+    "workspace_roots": ["/srv/source", "/data/projects"],
+    "command_allowlist": [
+      ["./scripts/test"],
+      ["go", "test"],
+      ["pnpm", "check"]
+    ],
+    "api_token_env": "FOREMAN_API_TOKEN"
+  }
+}
+```
+
+- `workspace_roots` 限制任务可使用的工作目录。Foreman 会解析绝对路径和软链接后再判断，避免通过 `..` 或 symlink 逃逸。省略表示不限制；显式 `[]` 表示拒绝所有任务目录。
+- `command_allowlist` 使用 argv 前缀匹配，约束 `process` 任务和 Foreman 自己执行的验证命令。例如 `["go","test"]` 允许 `go test ./...`，但不允许 `go env`。省略表示兼容旧行为；显式 `[]` 表示拒绝所有直接及验证命令。
+- Agent 内部通过自身工具执行的命令仍由 OpenCode、Grok 或 Codex 的 sandbox/permission 机制控制；Foreman 的命令白名单只覆盖它直接启动的命令。
+- `api_token_env` 只保存环境变量名。变量缺失或为空时 Foreman 拒绝启动，Token 不会进入 JSON、日志或 API 响应。
+
+启用认证后，Web 控制台会显示登录页，并把 Token 换成当前浏览器的 `HttpOnly`、`SameSite=Strict` 会话 Cookie。CLI 可直接使用 Bearer Token：
+
+```bash
+export FOREMAN_API_TOKEN='replace-with-a-long-random-token'
+./scripts/dev
+
+curl -H "Authorization: Bearer $FOREMAN_API_TOKEN" \
+  http://127.0.0.1:8090/api/v1/tasks
+```
+
+`GET /healthz`、Web 静态资源和认证入口保持公开，其余 `/api/*` 均要求有效 Cookie 或 Bearer Token。默认监听地址仍是 `127.0.0.1`；若改为通配、局域网或其他非回环地址，Foreman 会强制要求 Token，否则拒绝启动。跨机器访问还应由可信反向代理提供 HTTPS。
+
 Codex 会根据 Provider 字段实际建立 session-local API bridge。ACP Agent 的 Provider 字段同时作为选择器元数据和标准 `FOREMAN_PROVIDER_*` 环境传给包装脚本；OpenCode/Grok 当前仍由各自的 provider catalog 决定具体模型别名，`default_model` 应填写 catalog 中存在的名称。
 
 ### Grok Build Provider

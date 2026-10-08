@@ -107,6 +107,11 @@ export interface CreateTaskRequest {
   };
 }
 
+export interface AuthStatus {
+  required: boolean;
+  authenticated: boolean;
+}
+
 interface ApiErrorBody {
   error?: {code?: string; message?: string};
 }
@@ -147,6 +152,17 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     return undefined as T;
   }
   return (await response.json()) as T;
+}
+
+export function getAuthStatus(): Promise<AuthStatus> {
+  return request<AuthStatus>("/api/v1/auth");
+}
+
+export function createAuthSession(token: string): Promise<{authenticated: boolean}> {
+  return request<{authenticated: boolean}>("/api/v1/auth/session", {
+    method: "POST",
+    body: JSON.stringify({token})
+  });
 }
 
 export async function getAdapters(): Promise<AdapterDescriptor[]> {

@@ -25,7 +25,16 @@ const (
 )
 
 type File struct {
-	Agents []Profile `json:"agents"`
+	Agents   []Profile `json:"agents"`
+	Security *Security `json:"security,omitempty"`
+}
+
+// Security contains deployment-wide boundaries. Nil slices mean unrestricted
+// for backwards compatibility; explicit empty slices deny every value.
+type Security struct {
+	WorkspaceRoots   []string   `json:"workspace_roots,omitempty"`
+	CommandAllowlist [][]string `json:"command_allowlist,omitempty"`
+	APITokenEnv      string     `json:"api_token_env,omitempty"`
 }
 
 type Profile struct {
@@ -49,38 +58,89 @@ type Provider struct {
 }
 
 func Load(path string) ([]Profile, error) {
+	config, err := LoadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	return config.Agents, nil
+}
+
+func LoadFile(path string) (File, error) {
 	file, err := os.Open(path)
 	if err != nil {
-		return nil, fmt.Errorf("open agent configuration: %w", err)
+		return File{}, fmt.Errorf("open agent configuration: %w", err)
 	}
 	defer file.Close()
 	decoder := json.NewDecoder(file)
 	decoder.DisallowUnknownFields()
 	var config File
 	if err := decoder.Decode(&config); err != nil {
-		return nil, fmt.Errorf("decode agent configuration: %w", err)
+		return File{}, fmt.Errorf("decode agent configuration: %w", err)
 	}
 	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
 		if err == nil {
-			return nil, errors.New("agent configuration must contain one JSON object")
+			return File{}, errors.New("agent configuration must contain one JSON object")
 		}
-		return nil, fmt.Errorf("decode trailing agent configuration: %w", err)
+		return File{}, fmt.Errorf("decode trailing agent configuration: %w", err)
 	}
 	if len(config.Agents) == 0 {
-		return nil, errors.New("agent configuration has no agents")
+		return File{}, errors.New("agent configuration has no agents")
 	}
 	seen := make(map[string]struct{}, len(config.Agents))
 	for index := range config.Agents {
 		config.Agents[index].normalize()
 		if err := config.Agents[index].Validate(); err != nil {
-			return nil, fmt.Errorf("agents[%d]: %w", index, err)
+			return File{}, fmt.Errorf("agents[%d]: %w", index, err)
 		}
 		if _, exists := seen[config.Agents[index].Name]; exists {
-			return nil, fmt.Errorf("duplicate agent name %q", config.Agents[index].Name)
+			return File{}, fmt.Errorf("duplicate agent name %q", config.Agents[index].Name)
 		}
 		seen[config.Agents[index].Name] = struct{}{}
 	}
-	return config.Agents, nil
+	if config.Security != nil {
+		config.Security.normalize()
+		if err := config.Security.Validate(); err != nil {
+			return File{}, fmt.Errorf("security: %w", err)
+		}
+	}
+	return config, nil
+}
+
+func (s *Security) normalize() {
+	for index := range s.WorkspaceRoots {
+		s.WorkspaceRoots[index] = filepath.Clean(strings.TrimSpace(s.WorkspaceRoots[index]))
+	}
+	for i := range s.CommandAllowlist {
+		for j := range s.CommandAllowlist[i] {
+			s.CommandAllowlist[i][j] = strings.TrimSpace(s.CommandAllowlist[i][j])
+		}
+	}
+	s.APITokenEnv = strings.TrimSpace(s.APITokenEnv)
+}
+
+func (s Security) Validate() error {
+	for index, root := range s.WorkspaceRoots {
+		if root == "" || !filepath.IsAbs(root) {
+			return fmt.Errorf("workspace_roots[%d] must be an absolute path", index)
+		}
+		if strings.ContainsRune(root, '\x00') {
+			return fmt.Errorf("workspace_roots[%d] cannot contain NUL", index)
+		}
+	}
+	for index, prefix := range s.CommandAllowlist {
+		if len(prefix) == 0 {
+			return fmt.Errorf("command_allowlist[%d] must contain at least one argument", index)
+		}
+		for _, value := range prefix {
+			if value == "" || strings.ContainsRune(value, '\x00') {
+				return fmt.Errorf("command_allowlist[%d] contains an empty or invalid argument", index)
+			}
+		}
+	}
+	if s.APITokenEnv != "" && !validEnvironmentName(s.APITokenEnv) {
+		return fmt.Errorf("invalid api_token_env %q", s.APITokenEnv)
+	}
+	return nil
 }
 
 func (p *Profile) normalize() {

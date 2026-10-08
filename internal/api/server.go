@@ -22,11 +22,28 @@ type Server struct {
 	service *app.Service
 	bus     *event.Bus
 	mux     *http.ServeMux
+	auth    *tokenAuth
 }
 
 func NewServer(service *app.Service, bus *event.Bus, frontend ...http.Handler) *Server {
-	s := &Server{service: service, bus: bus, mux: http.NewServeMux()}
+	options := ServerOptions{}
+	if len(frontend) > 0 {
+		options.Frontend = frontend[0]
+	}
+	return NewServerWithOptions(service, bus, options)
+}
+
+type ServerOptions struct {
+	Frontend http.Handler
+	APIToken string
+}
+
+func NewServerWithOptions(service *app.Service, bus *event.Bus, options ServerOptions) *Server {
+	s := &Server{service: service, bus: bus, mux: http.NewServeMux(), auth: newTokenAuth(options.APIToken)}
 	s.mux.HandleFunc("GET /healthz", s.health)
+	s.mux.HandleFunc("GET /api/v1/auth", s.authStatus)
+	s.mux.HandleFunc("POST /api/v1/auth/session", s.createAuthSession)
+	s.mux.HandleFunc("DELETE /api/v1/auth/session", s.deleteAuthSession)
 	s.mux.HandleFunc("GET /api/v1/adapters", s.listAdapters)
 	s.mux.HandleFunc("GET /api/v1/tasks", s.listTasks)
 	s.mux.HandleFunc("POST /api/v1/tasks", s.createTask)
@@ -36,13 +53,18 @@ func NewServer(service *app.Service, bus *event.Bus, frontend ...http.Handler) *
 	s.mux.HandleFunc("POST /api/v1/tasks/{id}/actions", s.taskAction)
 	s.mux.HandleFunc("GET /api/v1/tasks/{id}/events", s.taskEvents)
 	s.mux.HandleFunc("GET /api/v1/events", s.events)
-	if len(frontend) > 0 && frontend[0] != nil {
-		s.mux.Handle("GET /", frontend[0])
+	if options.Frontend != nil {
+		s.mux.Handle("GET /", options.Frontend)
 	}
 	return s
 }
 
-func (s *Server) Handler() http.Handler { return s.mux }
+func (s *Server) Handler() http.Handler {
+	if s.auth == nil {
+		return s.mux
+	}
+	return s.auth.middleware(s.mux)
+}
 
 func (s *Server) health(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok", "api_version": "v1"})
@@ -331,6 +353,8 @@ func classifyError(err error) (int, string) {
 		return http.StatusConflict, "adapter_unavailable"
 	case errors.Is(err, app.ErrDiffUnavailable):
 		return http.StatusConflict, "diff_unavailable"
+	case errors.Is(err, app.ErrTaskForbidden):
+		return http.StatusForbidden, "task_forbidden"
 	case errors.Is(err, app.ErrTaskNotRunning), errors.Is(err, app.ErrActionUnavailable), errors.Is(err, app.ErrInvalidTransition), errors.Is(err, app.ErrTaskNotDeletable):
 		return http.StatusConflict, "action_conflict"
 	default:

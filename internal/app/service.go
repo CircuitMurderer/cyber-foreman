@@ -29,6 +29,7 @@ var (
 	ErrActionUnavailable = errors.New("task action is unavailable")
 	ErrTaskNotDeletable  = errors.New("running task must be stopped before deletion")
 	ErrDiffUnavailable   = errors.New("task does not use an isolated worktree")
+	ErrTaskForbidden     = errors.New("task is forbidden by deployment policy")
 )
 
 type StartTaskRequest struct {
@@ -50,16 +51,34 @@ type VerificationRequest struct {
 	WorkspacePolicy verification.WorkspacePolicy `json:"workspace_policy,omitempty"`
 }
 
+type TaskAuthorization struct {
+	Adapter              string
+	Workspace            string
+	Command              []string
+	VerificationCommands [][]string
+}
+
+type RequestPolicy interface {
+	AuthorizeTask(TaskAuthorization) error
+}
+
 type Service struct {
 	ctx            context.Context
 	adapters       *agent.Registry
 	defaultAdapter string
 	bus            *event.Bus
 	store          storage.TaskStore
+	requestPolicy  RequestPolicy
 
 	mu       sync.RWMutex
 	tasks    map[string]*domain.Task
 	runtimes map[string]taskRuntime
+}
+
+// SetRequestPolicy installs deployment authorization before the service starts
+// accepting tasks. Constructors remain permissive for CLI use and tests.
+func (s *Service) SetRequestPolicy(policy RequestPolicy) {
+	s.requestPolicy = policy
 }
 
 type taskRuntime struct {
@@ -221,6 +240,18 @@ func (s *Service) queueTask(req StartTaskRequest) (domain.Task, agent.Adapter, e
 			if err != nil {
 				return domain.Task{}, nil, fmt.Errorf("get working directory: %w", err)
 			}
+		}
+	}
+	if s.requestPolicy != nil {
+		verificationCommands := make([][]string, len(req.Verification.Commands))
+		for index, command := range req.Verification.Commands {
+			verificationCommands[index] = append([]string(nil), command.Argv...)
+		}
+		if err := s.requestPolicy.AuthorizeTask(TaskAuthorization{
+			Adapter: adapterName, Workspace: cwd, Command: append([]string(nil), req.Command...),
+			VerificationCommands: verificationCommands,
+		}); err != nil {
+			return domain.Task{}, nil, err
 		}
 	}
 	now := time.Now().UTC()
