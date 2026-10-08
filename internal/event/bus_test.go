@@ -88,3 +88,18 @@ func TestForgetTaskRemovesOnlyItsReplayHistory(t *testing.T) {
 		t.Fatal("timed out waiting for replay")
 	}
 }
+
+func TestRecentTaskEventsReturnsBoundedChronologicalSnapshot(t *testing.T) {
+	bus := NewBusWithHistory(8)
+	bus.Publish(domain.Event{TaskID: "task", Type: domain.EventTaskCreated})
+	bus.Publish(domain.Event{TaskID: "other", Type: domain.EventTaskCreated})
+	bus.Publish(domain.Event{TaskID: "task", Type: domain.EventAgentStarted})
+	bus.Publish(domain.Event{TaskID: "task", Type: domain.EventAgentExited})
+	events := bus.RecentTaskEvents("task", 2)
+	if len(events) != 2 || events[0].Type != domain.EventAgentStarted || events[1].Type != domain.EventAgentExited {
+		t.Fatalf("events=%#v", events)
+	}
+	if bus.RecentTaskEvents("task", 0) != nil {
+		t.Fatal("zero limit should return nil")
+	}
+}

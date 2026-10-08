@@ -3,9 +3,11 @@ package supervisor
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -95,6 +97,90 @@ func TestOpenAIReviewerSupportsUnauthenticatedLocalEndpoint(t *testing.T) {
 	if err != nil || result.Verdict != SemanticPass {
 		t.Fatalf("review=%#v err=%v", result, err)
 	}
+}
+
+func TestOpenAIReviewerUsesBoundedForemanToolsBeforeRequestingFollowUp(t *testing.T) {
+	var mu sync.Mutex
+	requests := 0
+	client := &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		requests++
+		var payload struct {
+			Tools    []any            `json:"tools"`
+			Messages []map[string]any `json:"messages"`
+		}
+		if err := json.NewDecoder(request.Body).Decode(&payload); err != nil {
+			t.Fatal(err)
+		}
+		if len(payload.Tools) < 4 {
+			t.Fatalf("tools=%d, want read tools plus terminal actions", len(payload.Tools))
+		}
+		var body string
+		if requests == 1 {
+			body = `{"choices":[{"message":{"content":"","tool_calls":[{"id":"call-read","type":"function","function":{"name":"inspect_task_state","arguments":"{}"}}]}}]}`
+		} else {
+			if len(payload.Messages) < 4 || payload.Messages[len(payload.Messages)-1]["role"] != "tool" {
+				t.Fatalf("tool result was not returned to model: %#v", payload.Messages)
+			}
+			body = `{"choices":[{"message":{"content":"","tool_calls":[{"id":"call-fix","type":"function","function":{"name":"request_follow_up","arguments":"{\"reason\":\"missing test result\",\"instruction\":\"Run the configured test and report the result.\"}"}}]}}]}`
+		}
+		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(body))}, nil
+	})}
+	reviewer, err := NewOpenAIReviewer(OpenAIReviewerConfig{
+		BaseURL: "https://example.test/v1", Model: "deepseek-chat", Client: client, ToolCalling: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	toolbox := &fakeSemanticToolbox{}
+	review, err := reviewer.Review(context.Background(), SemanticReviewRequest{
+		AgentResponse: "done", Toolbox: toolbox,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if review.Verdict != SemanticRedirect || review.ToolCall != "request_follow_up" || !strings.Contains(review.FollowUp, "configured test") {
+		t.Fatalf("review=%#v", review)
+	}
+	if requests != 2 || toolbox.calls != 1 {
+		t.Fatalf("requests=%d toolbox calls=%d", requests, toolbox.calls)
+	}
+}
+
+func TestOpenAIReviewerRejectsAmbiguousTerminalToolCalls(t *testing.T) {
+	client := &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		body := `{"choices":[{"message":{"tool_calls":[` +
+			`{"id":"one","type":"function","function":{"name":"accept_turn","arguments":"{\"reason\":\"ok\"}"}},` +
+			`{"id":"two","type":"function","function":{"name":"request_follow_up","arguments":"{\"reason\":\"bad\",\"instruction\":\"fix\"}"}}]}}]}`
+		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(body))}, nil
+	})}
+	reviewer, err := NewOpenAIReviewer(OpenAIReviewerConfig{
+		BaseURL: "https://example.test/v1", Model: "model", Client: client, ToolCalling: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = reviewer.Review(context.Background(), SemanticReviewRequest{AgentResponse: "done", Toolbox: &fakeSemanticToolbox{}})
+	if err == nil || !strings.Contains(err.Error(), "exactly one") {
+		t.Fatalf("error=%v", err)
+	}
+}
+
+type fakeSemanticToolbox struct {
+	calls int
+}
+
+func (f *fakeSemanticToolbox) SupportedTools() []SemanticTool {
+	return []SemanticTool{SemanticToolInspectTask}
+}
+
+func (f *fakeSemanticToolbox) ExecuteSemanticTool(_ context.Context, name SemanticTool, arguments json.RawMessage) (string, error) {
+	f.calls++
+	if name != SemanticToolInspectTask || string(arguments) != `{}` {
+		return "", errors.New("unexpected tool request")
+	}
+	return `{"status":"verifying"}`, nil
 }
 
 type roundTripFunc func(*http.Request) (*http.Response, error)

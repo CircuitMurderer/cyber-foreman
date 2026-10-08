@@ -220,7 +220,9 @@ Foreman 可以在 Agent 每轮结束且确定性 Git/命令验证通过后，再
       "base_url": "https://api.deepseek.com/v1",
       "api_key_env": "FOREMAN_AGENT_API_KEY_OPENAI",
       "model": "deepseek-chat",
-      "timeout": "20s"
+	  "timeout": "20s",
+	  "tool_calling": true,
+	  "allow_workspace_diff": false
     }
   }
 }
@@ -230,7 +232,9 @@ Foreman 可以在 Agent 每轮结束且确定性 Git/命令验证通过后，再
 
 内网部署只需把 `base_url`、`model` 和 `api_key_env` 换成本地 Qwen 的 OpenAI-compatible 参数；无鉴权端点可以省略 `api_key_env`。如果配置了变量名但变量缺失，Foreman 会输出警告并关闭辅助复核，其余功能继续运行。每个任务的“最大语义纠偏”默认是 1，设为 0 可禁用该任务的自动纠偏；预算用尽后的 LLM 建议只保留在事件记录中，不会形成无限循环。
 
-语义复核只自动发送有界的操作员指令、当前 Agent 可见回复以及确定性验证结论；不会主动读取源码、diff、工具输出、密钥或隐藏思维内容。操作员指令本身若包含代码或敏感信息仍会随请求发送。使用外部模型意味着任务文本和 Agent 回复会离开本机；敏感项目应改用内网模型或关闭该配置。
+启用 `tool_calling` 后，复核模型可以调用 Foreman 提供的受控工具：读取任务状态与预算、读取不含消息正文的最近生命周期摘要，以及提交 `accept_turn`、`report_uncertain` 或 `request_follow_up`。其中 `request_follow_up` 只是提议，仍会转换为原有的 `semantic_redirect` Decision，并经过状态、去重和语义纠偏预算后才会追加给 Agent；模型不能调用任意 Shell、文件系统或 Adapter 方法。
+
+默认只自动发送有界的操作员指令、当前 Agent 可见回复以及确定性验证结论。`allow_workspace_diff` 默认为 `false`；只有显式打开时，且任务使用隔离 worktree，模型才能请求经过敏感路径处理和长度限制的 Git diff。操作员指令、Agent 回复以及显式允许的 diff 仍可能包含业务代码或敏感信息。使用外部模型意味着这些内容会离开本机；敏感项目应改用内网模型、保持 diff 工具关闭，或完全关闭语义复核。隐藏思维和密钥不会作为工具结果提供。
 
 Codex 会根据 Provider 字段实际建立 session-local API bridge。ACP Agent 的 Provider 字段同时作为选择器元数据和标准 `FOREMAN_PROVIDER_*` 环境传给包装脚本；OpenCode/Grok 当前仍由各自的 provider catalog 决定具体模型别名，`default_model` 应填写 catalog 中存在的名称。
 

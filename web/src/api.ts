@@ -251,6 +251,7 @@ export const eventTypes = [
   "supervisor.action_finished",
   "supervisor.semantic_review_started",
   "supervisor.semantic_review_finished",
+  "supervisor.semantic_tool_called",
   "verification.started",
   "verification.finished",
   "stream.gap"

@@ -361,7 +361,7 @@ func (s *Service) consumePrompt(ctx context.Context, taskID string, events <-cha
 				}
 				if review, reviewed := s.reviewAgentTurn(
 					ctx, taskID, runtime.sessionID, runtime.semanticReview, trustedPrompts,
-					reviewInstruction, turnResponse.String(), report,
+					reviewInstruction, turnResponse.String(), report, snapshot,
 				); reviewed && review.Verdict == supervisor.SemanticRedirect {
 					sequence++
 					decision := supervisor.Decision{

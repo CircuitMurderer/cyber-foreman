@@ -356,7 +356,10 @@ function eventSummary(event: ForemanEvent): string {
   if (event.type === "supervisor.semantic_review_started") return `${String(data.provider ?? "openai")} · ${String(data.model ?? "")}`;
   if (event.type === "supervisor.semantic_review_finished") {
     if (data.success === false) return `辅助复核失败，已按确定性结果继续：${String(data.error ?? "unknown")}`;
-    return `${String(data.verdict ?? "uncertain")} · ${String(data.reason ?? "")}`;
+    return `${String(data.verdict ?? "uncertain")}${data.tool_call ? ` · ${String(data.tool_call)}` : ""} · ${String(data.reason ?? "")}`;
+  }
+  if (event.type === "supervisor.semantic_tool_called") {
+    return `${String(data.tool ?? "tool")}${data.success === false ? " · 请求被拒绝" : " · 调用成功"}`;
   }
   if (event.type === "verification.started") return `开始 ${String(data.verifier ?? "")} 验证`;
   if (event.type === "verification.finished") return `${String(data.verifier ?? "")} · ${data.passed ? "通过" : "未通过"}`;
@@ -398,6 +401,7 @@ function eventLabel(type: string): string {
     "supervisor.action_finished": "动作执行完成",
     "supervisor.semantic_review_started": "开始语义复核",
     "supervisor.semantic_review_finished": "语义复核完成",
+    "supervisor.semantic_tool_called": "辅助监工调用工具",
     "verification.started": "开始验证",
     "verification.finished": "验证完成",
     "stream.gap": "事件缺口"

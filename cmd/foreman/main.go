@@ -270,13 +270,14 @@ func serve(ctx context.Context, args []string) error {
 		if reviewerEnabled {
 			reviewer, reviewerErr := supervisor.NewOpenAIReviewer(supervisor.OpenAIReviewerConfig{
 				BaseURL: reviewConfig.BaseURL, APIKey: apiKey, Model: reviewConfig.Model,
-				Timeout: reviewConfig.TimeoutDuration(),
+				Timeout: reviewConfig.TimeoutDuration(), ToolCalling: reviewConfig.ToolCalling,
+				AllowWorkspaceDiff: reviewConfig.AllowWorkspaceDiff,
 			})
 			if reviewerErr != nil {
 				return fmt.Errorf("configure semantic reviewer: %w", reviewerErr)
 			}
 			service.SetSemanticReviewer(reviewer)
-			fmt.Printf("semantic reviewer enabled: openai/%s\n", reviewConfig.Model)
+			fmt.Printf("semantic reviewer enabled: openai/%s (tool calling: %t)\n", reviewConfig.Model, reviewConfig.ToolCalling)
 		}
 	}
 	if err := validateListenerSecurity(*addr, apiToken); err != nil {

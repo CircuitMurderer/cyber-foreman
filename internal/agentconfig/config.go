@@ -44,11 +44,13 @@ type SupervisorConfig struct {
 }
 
 type SemanticReviewConfig struct {
-	Format    string `json:"format"`
-	BaseURL   string `json:"base_url"`
-	APIKeyEnv string `json:"api_key_env"`
-	Model     string `json:"model"`
-	Timeout   string `json:"timeout,omitempty"`
+	Format             string `json:"format"`
+	BaseURL            string `json:"base_url"`
+	APIKeyEnv          string `json:"api_key_env"`
+	Model              string `json:"model"`
+	Timeout            string `json:"timeout,omitempty"`
+	ToolCalling        bool   `json:"tool_calling,omitempty"`
+	AllowWorkspaceDiff bool   `json:"allow_workspace_diff,omitempty"`
 }
 
 type Profile struct {

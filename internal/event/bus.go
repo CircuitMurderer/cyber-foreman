@@ -170,6 +170,27 @@ func (b *Bus) RememberTask(taskID string) {
 	b.mu.Unlock()
 }
 
+// RecentTaskEvents returns a bounded event-slice snapshot from the in-memory
+// replay window. Event data must be treated as immutable and redacted or
+// summarized before it is exposed outside the control plane.
+func (b *Bus) RecentTaskEvents(taskID string, limit int) []domain.Event {
+	if limit < 1 {
+		return nil
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	result := make([]domain.Event, 0, limit)
+	for index := len(b.history) - 1; index >= 0 && len(result) < limit; index-- {
+		if b.history[index].TaskID == taskID {
+			result = append(result, b.history[index])
+		}
+	}
+	for left, right := 0, len(result)-1; left < right; left, right = left+1, right-1 {
+		result[left], result[right] = result[right], result[left]
+	}
+	return result
+}
+
 // SubscribeSince atomically installs a live subscription and replays retained
 // events after the requested sequence. gap is true when older requested events
 // have already fallen out of the in-memory history window.

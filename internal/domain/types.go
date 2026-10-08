@@ -67,6 +67,7 @@ const (
 	EventSupervisorFinished  EventType = "supervisor.action_finished"
 	EventSemanticReviewStart EventType = "supervisor.semantic_review_started"
 	EventSemanticReviewEnd   EventType = "supervisor.semantic_review_finished"
+	EventSemanticToolCall    EventType = "supervisor.semantic_tool_called"
 	EventVerificationStart   EventType = "verification.started"
 	EventVerificationFinish  EventType = "verification.finished"
 	EventTaskAttention       EventType = "task.attention_required"
