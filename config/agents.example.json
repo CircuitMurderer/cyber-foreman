@@ -60,10 +60,16 @@
       "base_url": "http://qwen.internal/v1",
       "api_key_env": "FOREMAN_SUPERVISOR_API_KEY",
       "model": "qwen3.8",
-	  "timeout": "20s",
-	  "tool_calling": true,
-	  "allow_workspace_diff": false,
-	  "allow_operator_attention": false
+      "timeout": "20s",
+      "tool_calling": true,
+      "allow_workspace_diff": false,
+      "allow_operator_attention": false,
+      "mid_turn": {
+        "enabled": false,
+        "interval": "30s",
+        "min_output_runes": 256,
+        "max_reviews": 1
+      }
     }
   }
 }

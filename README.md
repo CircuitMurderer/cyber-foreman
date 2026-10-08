@@ -222,8 +222,14 @@ Foreman 可以在 Agent 每轮结束且确定性 Git/命令验证通过后，再
       "model": "deepseek-chat",
       "timeout": "20s",
       "tool_calling": true,
-	  "allow_workspace_diff": false,
-	  "allow_operator_attention": false
+      "allow_workspace_diff": false,
+      "allow_operator_attention": false,
+      "mid_turn": {
+        "enabled": false,
+        "interval": "30s",
+        "min_output_runes": 256,
+        "max_reviews": 1
+      }
     }
   }
 }
@@ -236,6 +242,8 @@ Foreman 可以在 Agent 每轮结束且确定性 Git/命令验证通过后，再
 启用 `tool_calling` 后，复核模型可以调用 Foreman 提供的受控工具：读取任务状态与预算、读取不含消息正文的最近生命周期摘要、读取不含命令参数/文件内容/原始输出的 Agent 工具活动，以及提交 `accept_turn`、`report_uncertain` 或 `request_follow_up`。其中 `request_follow_up` 只是提议，仍会转换为原有的 `semantic_redirect` Decision，并经过状态、去重和语义纠偏预算后才会追加给 Agent；模型不能调用任意 Shell、文件系统或 Adapter 方法。
 
 `allow_operator_attention` 默认关闭。显式打开后，模型还可以调用 `request_operator_attention`，将无法通过一次 follow-up 安全消除的明确风险升级为 `attention_required`。该请求使用独立的“最大人工升级”预算，仍经过 Executor；操作员可以在界面查看原因并继续同一 Agent session。模型不能用它把确定性失败改成成功，未开启能力、预算耗尽或调用异常时均 fail-open。
+
+`mid_turn.enabled` 默认关闭。启用后，Foreman 会在 Agent 仍在执行时按 `interval` 做低频抽检，但只有累计可见回复达到 `min_output_runes` 才会调用模型；每个 Agent turn 最多调用 `max_reviews` 次。模型只能在发现明确且继续等待可能造成损失的跑偏时请求纠偏，Foreman 会通过原有 `Decision → Executor → Budget` 路径取消当前 turn，并在同一 session 追加修正指令。运行中抽检不能请求人工升级，模型错误和语义纠偏预算耗尽均 fail-open，Agent 回合结束后仍会执行完整的确定性验证和结束后复核。
 
 默认只自动发送有界的操作员指令、当前 Agent 可见回复以及确定性验证结论。`allow_workspace_diff` 默认为 `false`；只有显式打开时，且任务使用隔离 worktree，模型才能请求经过敏感路径处理和长度限制的 Git diff。操作员指令、Agent 回复以及显式允许的 diff 仍可能包含业务代码或敏感信息。使用外部模型意味着这些内容会离开本机；敏感项目应改用内网模型、保持 diff 工具关闭，或完全关闭语义复核。隐藏思维和密钥不会作为工具结果提供。
 

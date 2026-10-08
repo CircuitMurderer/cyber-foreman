@@ -353,10 +353,10 @@ function eventSummary(event: ForemanEvent): string {
   if (event.type === "task.state") return `${String(data.from ?? "")} → ${String(data.to ?? "")}${data.reason ? ` · ${String(data.reason)}` : ""}`;
   if (event.type === "supervisor.decision") return `${String(data.action ?? "decision")} · ${String(data.reason ?? "")}`;
   if (event.type === "supervisor.action_finished") return data.success ? "动作执行成功" : `动作失败：${String(data.error ?? "unknown")}`;
-  if (event.type === "supervisor.semantic_review_started") return `${String(data.provider ?? "openai")} · ${String(data.model ?? "")}`;
+  if (event.type === "supervisor.semantic_review_started") return `${semanticPhaseLabel(data.phase)} · ${String(data.provider ?? "openai")} · ${String(data.model ?? "")}`;
   if (event.type === "supervisor.semantic_review_finished") {
-    if (data.success === false) return `辅助复核失败，已按确定性结果继续：${String(data.error ?? "unknown")}`;
-    return `${String(data.verdict ?? "uncertain")}${data.tool_call ? ` · ${String(data.tool_call)}` : ""} · ${String(data.reason ?? "")}`;
+    if (data.success === false) return `${semanticPhaseLabel(data.phase)}辅助复核失败，已按确定性流程继续：${String(data.error ?? "unknown")}`;
+    return `${semanticPhaseLabel(data.phase)} · ${String(data.verdict ?? "uncertain")}${data.tool_call ? ` · ${String(data.tool_call)}` : ""} · ${String(data.reason ?? "")}`;
   }
   if (event.type === "supervisor.semantic_tool_called") {
     return `${String(data.tool ?? "tool")}${data.success === false ? " · 请求被拒绝" : " · 调用成功"}`;
@@ -378,6 +378,10 @@ function eventSummary(event: ForemanEvent): string {
   }
   if (typeof data.reason === "string") return data.reason;
   return "";
+}
+
+function semanticPhaseLabel(phase: unknown): string {
+  return phase === "mid_turn" ? "运行中抽检" : "结束后复核";
 }
 
 function eventLabel(type: string): string {

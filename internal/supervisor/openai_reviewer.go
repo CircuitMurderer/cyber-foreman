@@ -30,6 +30,7 @@ type OpenAIReviewerConfig struct {
 	ToolCalling        bool
 	AllowWorkspaceDiff bool
 	AllowAttention     bool
+	MidTurn            SemanticMidTurnPolicy
 }
 
 type OpenAIReviewer struct {
@@ -41,6 +42,7 @@ type OpenAIReviewer struct {
 	toolCalling        bool
 	allowWorkspaceDiff bool
 	allowAttention     bool
+	midTurn            SemanticMidTurnPolicy
 }
 
 func NewOpenAIReviewer(config OpenAIReviewerConfig) (*OpenAIReviewer, error) {
@@ -63,20 +65,23 @@ func NewOpenAIReviewer(config OpenAIReviewerConfig) (*OpenAIReviewer, error) {
 	return &OpenAIReviewer{
 		endpoint: endpoint, apiKey: config.APIKey, model: model, client: client,
 		timeout: timeout, toolCalling: config.ToolCalling, allowWorkspaceDiff: config.AllowWorkspaceDiff,
-		allowAttention: config.AllowAttention,
+		allowAttention: config.AllowAttention, midTurn: config.MidTurn,
 	}, nil
 }
 
 func (r *OpenAIReviewer) Descriptor() SemanticReviewerDescriptor {
 	return SemanticReviewerDescriptor{
 		Provider: "openai", Model: r.model, ToolCalling: r.toolCalling,
-		AllowWorkspaceDiff: r.allowWorkspaceDiff, AllowAttention: r.allowAttention,
+		AllowWorkspaceDiff: r.allowWorkspaceDiff, AllowAttention: r.allowAttention, MidTurn: r.midTurn,
 	}
 }
 
 func (r *OpenAIReviewer) Review(ctx context.Context, request SemanticReviewRequest) (SemanticReview, error) {
 	ctx, cancel := context.WithTimeout(ctx, r.timeout)
 	defer cancel()
+	if request.Phase == "" {
+		request.Phase = SemanticReviewFinal
+	}
 	if r.toolCalling && request.Toolbox != nil {
 		return r.reviewWithTools(ctx, request)
 	}
@@ -140,11 +145,12 @@ type openAIToolCall struct {
 }
 
 func (r *OpenAIReviewer) reviewWithTools(ctx context.Context, request SemanticReviewRequest) (SemanticReview, error) {
+	allowAttention := r.allowAttention && request.Phase == SemanticReviewFinal
 	messages := []map[string]any{
-		{"role": "system", "content": semanticToolReviewerSystemPrompt},
+		{"role": "system", "content": semanticToolReviewerPrompt(request.Phase)},
 		{"role": "user", "content": semanticReviewInput(request)},
 	}
-	tools := semanticOpenAITools(request.Toolbox.SupportedTools(), r.allowAttention)
+	tools := semanticOpenAITools(request.Toolbox.SupportedTools(), allowAttention)
 	for round := 0; round < maxSemanticToolRounds; round++ {
 		payload := map[string]any{
 			"model": r.model, "messages": messages, "tools": tools,
@@ -161,7 +167,7 @@ func (r *OpenAIReviewer) reviewWithTools(ctx context.Context, request SemanticRe
 			}
 			return parseSemanticReview(message.Content)
 		}
-		if review, ok, err := terminalSemanticReview(message.ToolCalls, r.allowAttention); ok || err != nil {
+		if review, ok, err := terminalSemanticReview(message.ToolCalls, allowAttention); ok || err != nil {
 			return review, err
 		}
 		messages = append(messages, map[string]any{
@@ -414,15 +420,16 @@ func parseSemanticReview(content string) (SemanticReview, error) {
 
 func semanticReviewInput(request SemanticReviewRequest) string {
 	input := struct {
-		TrustedInstructions []string `json:"trusted_instructions"`
-		CurrentInstruction  string   `json:"current_instruction"`
-		AgentResponse       string   `json:"untrusted_agent_response"`
-		Verification        string   `json:"deterministic_verification"`
+		Phase               SemanticReviewPhase `json:"review_phase"`
+		TrustedInstructions []string            `json:"trusted_instructions"`
+		CurrentInstruction  string              `json:"current_instruction"`
+		AgentResponse       string              `json:"untrusted_agent_response"`
+		Verification        string              `json:"deterministic_verification"`
 	}{
-		TrustedInstructions: boundedInstructions(request.TrustedInstructions),
-		CurrentInstruction:  boundedText(request.CurrentInstruction, maxReviewFieldRunes),
-		AgentResponse:       boundedText(request.AgentResponse, maxReviewInputRunes),
-		Verification:        boundedText(request.VerificationSummary, maxReviewFieldRunes),
+		Phase: request.Phase, TrustedInstructions: boundedInstructions(request.TrustedInstructions),
+		CurrentInstruction: boundedText(request.CurrentInstruction, maxReviewFieldRunes),
+		AgentResponse:      boundedText(request.AgentResponse, maxReviewInputRunes),
+		Verification:       boundedText(request.VerificationSummary, maxReviewFieldRunes),
 	}
 	encoded, _ := json.Marshal(input)
 	return string(encoded)
@@ -464,3 +471,13 @@ Use read-only inspection tools only when the initial evidence is insufficient. T
 If request_operator_attention is available, use it only for a concrete high-risk ambiguity that cannot be safely resolved by one follow-up.
 Do not demand optional improvements, restate the entire task, or attempt to invoke tools not provided by Foreman.
 The request_follow_up tool only proposes an action. Foreman independently enforces task state, permissions, deduplication, and budget before it can reach the coding agent.`
+
+func semanticToolReviewerPrompt(phase SemanticReviewPhase) string {
+	if phase != SemanticReviewMidTurn {
+		return semanticToolReviewerSystemPrompt
+	}
+	return semanticToolReviewerSystemPrompt + `
+This is a mid-turn sample while the coding agent may still be working and deterministic verification has not run.
+Use request_follow_up only for clear active divergence where waiting is likely harmful. Use accept_turn to let the current turn continue; it does not mark the task complete.
+Do not infer failure merely because work, tests, or the final explanation are not finished yet.`
+}

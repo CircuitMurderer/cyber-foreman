@@ -24,6 +24,7 @@ func (s *Service) reviewAgentTurn(
 	currentInstruction, response string,
 	report verificationReport,
 	snapshot supervisor.Snapshot,
+	phase supervisor.SemanticReviewPhase,
 ) (supervisor.SemanticReview, bool) {
 	if reviewer == nil || strings.TrimSpace(response) == "" {
 		return supervisor.SemanticReview{}, false
@@ -35,7 +36,7 @@ func (s *Service) reviewAgentTurn(
 		Data: map[string]any{
 			"provider": descriptor.Provider, "model": descriptor.Model,
 			"tool_calling": descriptor.ToolCalling, "allow_workspace_diff": descriptor.AllowWorkspaceDiff,
-			"allow_operator_attention": descriptor.AllowAttention,
+			"allow_operator_attention": descriptor.AllowAttention, "phase": phase,
 		},
 	})
 	trusted := make([]string, 0, len(instructions))
@@ -46,18 +47,19 @@ func (s *Service) reviewAgentTurn(
 	}
 	review, err := reviewer.Review(ctx, supervisor.SemanticReviewRequest{
 		TaskID: taskID, TrustedInstructions: trusted, CurrentInstruction: currentInstruction,
-		AgentResponse: response, VerificationSummary: semanticVerificationSummary(report),
+		AgentResponse: response, VerificationSummary: semanticVerificationSummaryForPhase(report, phase), Phase: phase,
 		Toolbox: &semanticToolbox{
 			service: s, taskID: taskID, snapshot: snapshot, report: report,
 			allowWorkspaceDiff: descriptor.AllowWorkspaceDiff,
 		},
 	})
-	if err == nil && review.Verdict == supervisor.SemanticAttention && !descriptor.AllowAttention {
+	if err == nil && review.Verdict == supervisor.SemanticAttention &&
+		(!descriptor.AllowAttention || phase != supervisor.SemanticReviewFinal) {
 		err = errors.New("semantic reviewer requested disabled operator attention")
 		review = supervisor.SemanticReview{}
 	}
 	data := map[string]any{
-		"provider": descriptor.Provider, "model": descriptor.Model, "success": err == nil,
+		"provider": descriptor.Provider, "model": descriptor.Model, "success": err == nil, "phase": phase,
 	}
 	if err != nil {
 		data["error"] = err.Error()
@@ -426,8 +428,21 @@ func semanticVerificationSummary(report verificationReport) string {
 	return strings.Join(parts, "; ")
 }
 
+func semanticVerificationSummaryForPhase(report verificationReport, phase supervisor.SemanticReviewPhase) string {
+	if phase == supervisor.SemanticReviewMidTurn {
+		return "Deterministic verification has not run yet because the agent turn is still active."
+	}
+	return semanticVerificationSummary(report)
+}
+
 func semanticRedirectPrompt(review supervisor.SemanticReview) string {
 	return "辅助监工在确定性门禁通过后发现当前回复可能偏离任务。请根据以下具体问题继续修正；不要撤销已经正确完成的工作，完成后照常结束本轮。\n\n" +
+		"<review_reason>\n" + review.Reason + "\n</review_reason>\n\n" +
+		"<requested_follow_up>\n" + review.FollowUp + "\n</requested_follow_up>"
+}
+
+func midTurnSemanticRedirectPrompt(review supervisor.SemanticReview) string {
+	return "辅助监工在本轮执行期间发现了明确的方向偏差，因此已中断上一轮。请根据以下具体问题立即调整；保留已经正确完成的工作，继续完成原任务，并在完成后照常结束本轮。\n\n" +
 		"<review_reason>\n" + review.Reason + "\n</review_reason>\n\n" +
 		"<requested_follow_up>\n" + review.FollowUp + "\n</requested_follow_up>"
 }

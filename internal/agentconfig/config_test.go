@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"cyber-foreman/internal/agent"
 )
@@ -108,7 +109,7 @@ func TestLoadFileRejectsInvalidSecurity(t *testing.T) {
 
 func TestLoadFileIncludesSemanticReviewer(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "agents.json")
-	contents := `{"agents":[{"name":"a","driver":"acp","command":"agent"}],"supervisor":{"semantic_review":{"format":"openai","base_url":"https://api.deepseek.com/v1","api_key_env":"FOREMAN_AGENT_API_KEY_OPENAI","model":"deepseek-chat","timeout":"15s","tool_calling":true,"allow_workspace_diff":true,"allow_operator_attention":true}}}`
+	contents := `{"agents":[{"name":"a","driver":"acp","command":"agent"}],"supervisor":{"semantic_review":{"format":"openai","base_url":"https://api.deepseek.com/v1","api_key_env":"FOREMAN_AGENT_API_KEY_OPENAI","model":"deepseek-chat","timeout":"15s","tool_calling":true,"allow_workspace_diff":true,"allow_operator_attention":true,"mid_turn":{"enabled":true,"interval":"12s","min_output_runes":128,"max_reviews":2}}}}`
 	if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -120,16 +121,39 @@ func TestLoadFileIncludesSemanticReviewer(t *testing.T) {
 	if reviewer.Format != FormatOpenAI || reviewer.Model != "deepseek-chat" || reviewer.TimeoutDuration().String() != "15s" || !reviewer.ToolCalling || !reviewer.AllowWorkspaceDiff || !reviewer.AllowAttention {
 		t.Fatalf("semantic reviewer=%#v", reviewer)
 	}
+	if reviewer.MidTurn == nil || !reviewer.MidTurn.Enabled || reviewer.MidTurn.IntervalDuration() != 12*time.Second || reviewer.MidTurn.MinOutputRunes != 128 || reviewer.MidTurn.MaxReviews != 2 {
+		t.Fatalf("mid-turn reviewer=%#v", reviewer.MidTurn)
+	}
+}
+
+func TestLoadFileAppliesMidTurnSemanticDefaults(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "agents.json")
+	contents := `{"agents":[{"name":"a","driver":"acp","command":"agent"}],"supervisor":{"semantic_review":{"format":"openai","base_url":"http://models.internal/v1","model":"qwen","tool_calling":true,"mid_turn":{"enabled":true}}}}`
+	if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	config, err := LoadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	midTurn := config.Supervisor.SemanticReview.MidTurn
+	if midTurn.IntervalDuration() != 30*time.Second || midTurn.MinOutputRunes != 256 || midTurn.MaxReviews != 1 {
+		t.Fatalf("mid-turn defaults=%#v", midTurn)
+	}
 }
 
 func TestLoadFileRejectsInvalidSemanticReviewer(t *testing.T) {
 	for name, reviewer := range map[string]string{
-		"format":   `{"format":"anthropic","base_url":"https://example.com","api_key_env":"KEY","model":"m"}`,
-		"base":     `{"format":"openai","base_url":"relative","api_key_env":"KEY","model":"m"}`,
-		"userinfo": `{"format":"openai","base_url":"https://user:pass@example.com","api_key_env":"KEY","model":"m"}`,
-		"key env":  `{"format":"openai","base_url":"https://example.com","api_key_env":"BAD=KEY","model":"m"}`,
-		"model":    `{"format":"openai","base_url":"https://example.com","api_key_env":"KEY"}`,
-		"timeout":  `{"format":"openai","base_url":"https://example.com","api_key_env":"KEY","model":"m","timeout":"never"}`,
+		"format":                 `{"format":"anthropic","base_url":"https://example.com","api_key_env":"KEY","model":"m"}`,
+		"base":                   `{"format":"openai","base_url":"relative","api_key_env":"KEY","model":"m"}`,
+		"userinfo":               `{"format":"openai","base_url":"https://user:pass@example.com","api_key_env":"KEY","model":"m"}`,
+		"key env":                `{"format":"openai","base_url":"https://example.com","api_key_env":"BAD=KEY","model":"m"}`,
+		"model":                  `{"format":"openai","base_url":"https://example.com","api_key_env":"KEY"}`,
+		"timeout":                `{"format":"openai","base_url":"https://example.com","api_key_env":"KEY","model":"m","timeout":"never"}`,
+		"mid-turn-without-tools": `{"format":"openai","base_url":"https://example.com","model":"m","mid_turn":{"enabled":true}}`,
+		"mid-turn-interval":      `{"format":"openai","base_url":"https://example.com","model":"m","tool_calling":true,"mid_turn":{"enabled":true,"interval":"never"}}`,
+		"mid-turn-runes":         `{"format":"openai","base_url":"https://example.com","model":"m","tool_calling":true,"mid_turn":{"min_output_runes":-1}}`,
+		"mid-turn-reviews":       `{"format":"openai","base_url":"https://example.com","model":"m","tool_calling":true,"mid_turn":{"max_reviews":-1}}`,
 	} {
 		t.Run(name, func(t *testing.T) {
 			path := filepath.Join(t.TempDir(), "agents.json")

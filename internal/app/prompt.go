@@ -20,6 +20,12 @@ type promptOutcome struct {
 	err        error
 }
 
+type midTurnReviewOutcome struct {
+	generation uint64
+	review     supervisor.SemanticReview
+	reviewed   bool
+}
+
 func (s *Service) consumePrompt(ctx context.Context, taskID string, events <-chan domain.Event) {
 	s.mu.RLock()
 	runtime, ok := s.runtimes[taskID]
@@ -52,6 +58,27 @@ func (s *Service) consumePrompt(ctx context.Context, taskID string, events <-cha
 	turnResponseRunes := 0
 	currentInstruction := ""
 	currentInstructionSource := ""
+	midTurnPolicy := supervisor.SemanticMidTurnPolicy{}
+	if runtime.semanticReview != nil {
+		midTurnPolicy = runtime.semanticReview.Descriptor().MidTurn
+	}
+	if midTurnPolicy.Interval <= 0 || midTurnPolicy.MinOutputRunes < 1 || midTurnPolicy.MaxReviews < 1 {
+		midTurnPolicy.Enabled = false
+	}
+	midTurnOutcomes := make(chan midTurnReviewOutcome, 2)
+	var midTurnTimer *time.Timer
+	var midTurnC <-chan time.Time
+	var midTurnCancel context.CancelFunc
+	midTurnActive := false
+	midTurnReviews := 0
+	stopMidTurnReview := func() {
+		midTurnC = stopTaskTimer(midTurnTimer)
+		if midTurnCancel != nil {
+			midTurnCancel()
+			midTurnCancel = nil
+		}
+		midTurnActive = false
+	}
 	rememberPrompt := func(text, source string) {
 		message := domain.ConversationMessageData{Role: "user", Source: source, Text: text}
 		trustedPrompts = append(trustedPrompts, message)
@@ -61,6 +88,8 @@ func (s *Service) consumePrompt(ctx context.Context, taskID string, events <-cha
 		})
 	}
 	startPrompt := func(displayText, promptText, source string, remember bool) {
+		stopMidTurnReview()
+		midTurnReviews = 0
 		turnResponse.Reset()
 		turnResponseRunes = 0
 		currentInstruction = displayText
@@ -83,6 +112,9 @@ func (s *Service) consumePrompt(ctx context.Context, taskID string, events <-cha
 			result, err := runtime.adapter.Prompt(ctx, sessionID, agent.PromptRequest{Text: promptText})
 			outcomes <- promptOutcome{sessionID: sessionID, generation: generation, result: result, err: err}
 		}()
+		if midTurnPolicy.Enabled {
+			midTurnC = resetTaskTimer(midTurnTimer, midTurnPolicy.Interval)
+		}
 	}
 
 	idleTimer, idleC := taskTimer(runtime.policy.IdleTimeout)
@@ -93,6 +125,11 @@ func (s *Service) consumePrompt(ctx context.Context, taskID string, events <-cha
 	if hardTimer != nil {
 		defer hardTimer.Stop()
 	}
+	if midTurnPolicy.Enabled {
+		midTurnTimer = time.NewTimer(midTurnPolicy.Interval)
+		midTurnC = stopTaskTimer(midTurnTimer)
+		defer midTurnTimer.Stop()
+	}
 
 	engine := supervisor.Engine{}
 	executor := supervisor.Executor{Publisher: s.bus}
@@ -101,6 +138,34 @@ func (s *Service) consumePrompt(ctx context.Context, taskID string, events <-cha
 	pendingFollowUp := ""
 	pendingFollowUpSource := ""
 	manualInterrupted := false
+	launchMidTurnReview := func() {
+		if !midTurnPolicy.Enabled || runtime.semanticReview == nil || midTurnActive ||
+			!promptActive || pendingFollowUp != "" || midTurnReviews >= midTurnPolicy.MaxReviews {
+			return
+		}
+		midTurnReviews++
+		midTurnActive = true
+		midTurnC = nil
+		reviewGeneration := promptGeneration
+		reviewInstruction := ""
+		if currentInstructionSource == "operator" {
+			reviewInstruction = currentInstruction
+		}
+		instructions := append([]domain.ConversationMessageData(nil), trustedPrompts...)
+		response := turnResponse.String()
+		reviewSnapshot := snapshot
+		reviewSessionID := runtime.sessionID
+		reviewer := runtime.semanticReview
+		reviewCtx, cancel := context.WithCancel(ctx)
+		midTurnCancel = cancel
+		go func() {
+			review, reviewed := s.reviewAgentTurn(
+				reviewCtx, taskID, reviewSessionID, reviewer, instructions,
+				reviewInstruction, response, verificationReport{}, reviewSnapshot, supervisor.SemanticReviewMidTurn,
+			)
+			midTurnOutcomes <- midTurnReviewOutcome{generation: reviewGeneration, review: review, reviewed: reviewed}
+		}()
+	}
 	recoverSession := func(observation supervisor.Observation, resumeTurn bool) bool {
 		decisions := engine.Evaluate(snapshot, observation)
 		if len(decisions) != 1 {
@@ -129,6 +194,7 @@ func (s *Service) consumePrompt(ctx context.Context, taskID string, events <-cha
 			return false
 		}
 		snapshot.Status = domain.TaskRecovering
+		stopMidTurnReview()
 		promptGeneration++ // Any outcome from the disconnected session is stale.
 		promptActive = false
 		if pendingFollowUp != "" {
@@ -228,6 +294,7 @@ func (s *Service) consumePrompt(ctx context.Context, taskID string, events <-cha
 			snapshot = next
 			pendingFollowUp = action.message
 			pendingFollowUpSource = "operator"
+			stopMidTurnReview()
 			idleC = nil
 			s.bus.Publish(domain.Event{
 				TaskID: taskID, SessionID: runtime.sessionID, Type: domain.EventAgentInterrupt,
@@ -292,17 +359,70 @@ func (s *Service) consumePrompt(ctx context.Context, taskID string, events <-cha
 				pendingFollowUp = runtime.interruptWith
 				pendingFollowUpSource = "operator"
 				manualInterrupted = true
+				stopMidTurnReview()
 				idleC = nil
 				s.bus.Publish(domain.Event{
 					TaskID: taskID, SessionID: runtime.sessionID, Type: domain.EventAgentInterrupt,
 					Timestamp: time.Now().UTC(), Data: map[string]string{"rule_id": decision.RuleID},
 				})
 			}
+		case <-midTurnC:
+			midTurnC = nil
+			if !promptActive || pendingFollowUp != "" || midTurnReviews >= midTurnPolicy.MaxReviews {
+				continue
+			}
+			if turnResponseRunes < midTurnPolicy.MinOutputRunes {
+				midTurnC = resetTaskTimer(midTurnTimer, midTurnPolicy.Interval)
+				continue
+			}
+			launchMidTurnReview()
+		case outcome := <-midTurnOutcomes:
+			if outcome.generation != promptGeneration {
+				continue
+			}
+			midTurnActive = false
+			midTurnCancel = nil
+			if !promptActive || pendingFollowUp != "" {
+				continue
+			}
+			if outcome.reviewed && outcome.review.Verdict == supervisor.SemanticRedirect {
+				sequence++
+				decision := supervisor.Decision{
+					RuleID: "semantic-review-mid-turn", Action: supervisor.ActionCancelAndFollowUp,
+					Reason:     outcome.review.Reason,
+					Evidence:   []string{fmt.Sprintf("%s:semantic-mid-turn:%d", taskID, sequence)},
+					DedupeKey:  fmt.Sprintf("%s:semantic-mid-turn:%d:%d", taskID, promptGeneration, midTurnReviews),
+					BudgetCost: supervisor.BudgetCost{SemanticRedirects: 1},
+				}
+				next, _, executeErr := executor.Execute(ctx, snapshot, decision, performer)
+				if executeErr == nil {
+					snapshot = next
+					pendingFollowUp = midTurnSemanticRedirectPrompt(outcome.review)
+					pendingFollowUpSource = "supervisor"
+					stopMidTurnReview()
+					idleC = nil
+					s.bus.Publish(domain.Event{
+						TaskID: taskID, SessionID: runtime.sessionID, Type: domain.EventAgentInterrupt,
+						Timestamp: time.Now().UTC(), Data: map[string]string{"rule_id": decision.RuleID},
+					})
+					continue
+				}
+				if !errors.Is(executeErr, supervisor.ErrBudgetExceeded) {
+					_ = s.requireAttention(taskID, "mid-turn semantic reviewer action failed: "+executeErr.Error())
+					return
+				}
+				midTurnC = nil
+				continue
+			}
+			if midTurnReviews < midTurnPolicy.MaxReviews {
+				midTurnC = resetTaskTimer(midTurnTimer, midTurnPolicy.Interval)
+			}
 		case outcome := <-outcomes:
 			if outcome.generation != promptGeneration || outcome.sessionID != runtime.sessionID {
 				continue
 			}
 			promptActive = false
+			stopMidTurnReview()
 			if ctx.Err() != nil {
 				return
 			}
@@ -361,7 +481,7 @@ func (s *Service) consumePrompt(ctx context.Context, taskID string, events <-cha
 				}
 				review, reviewed := s.reviewAgentTurn(
 					ctx, taskID, runtime.sessionID, runtime.semanticReview, trustedPrompts,
-					reviewInstruction, turnResponse.String(), report, snapshot,
+					reviewInstruction, turnResponse.String(), report, snapshot, supervisor.SemanticReviewFinal,
 				)
 				if reviewed {
 					switch review.Verdict {
@@ -511,6 +631,7 @@ func (s *Service) consumePrompt(ctx context.Context, taskID string, events <-cha
 			snapshot = next
 			pendingFollowUp = timeoutFollowUp(decision)
 			pendingFollowUpSource = "supervisor"
+			stopMidTurnReview()
 			s.bus.Publish(domain.Event{
 				TaskID: taskID, SessionID: runtime.sessionID, Type: domain.EventAgentInterrupt,
 				Timestamp: time.Now().UTC(), Data: map[string]string{"rule_id": decision.RuleID},

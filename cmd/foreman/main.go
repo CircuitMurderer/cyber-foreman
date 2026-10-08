@@ -268,10 +268,18 @@ func serve(ctx context.Context, args []string) error {
 			}
 		}
 		if reviewerEnabled {
+			midTurn := supervisor.SemanticMidTurnPolicy{}
+			if reviewConfig.MidTurn != nil {
+				midTurn = supervisor.SemanticMidTurnPolicy{
+					Enabled: reviewConfig.MidTurn.Enabled, Interval: reviewConfig.MidTurn.IntervalDuration(),
+					MinOutputRunes: reviewConfig.MidTurn.MinOutputRunes, MaxReviews: reviewConfig.MidTurn.MaxReviews,
+				}
+			}
 			reviewer, reviewerErr := supervisor.NewOpenAIReviewer(supervisor.OpenAIReviewerConfig{
 				BaseURL: reviewConfig.BaseURL, APIKey: apiKey, Model: reviewConfig.Model,
 				Timeout: reviewConfig.TimeoutDuration(), ToolCalling: reviewConfig.ToolCalling,
 				AllowWorkspaceDiff: reviewConfig.AllowWorkspaceDiff, AllowAttention: reviewConfig.AllowAttention,
+				MidTurn: midTurn,
 			})
 			if reviewerErr != nil {
 				return fmt.Errorf("configure semantic reviewer: %w", reviewerErr)

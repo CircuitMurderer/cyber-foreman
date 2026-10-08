@@ -3,15 +3,20 @@ package supervisor
 import (
 	"context"
 	"encoding/json"
+	"time"
 )
 
 type SemanticVerdict string
+type SemanticReviewPhase string
 
 const (
 	SemanticPass      SemanticVerdict = "pass"
 	SemanticRedirect  SemanticVerdict = "redirect"
 	SemanticUncertain SemanticVerdict = "uncertain"
 	SemanticAttention SemanticVerdict = "attention"
+
+	SemanticReviewFinal   SemanticReviewPhase = "final"
+	SemanticReviewMidTurn SemanticReviewPhase = "mid_turn"
 )
 
 type SemanticReviewRequest struct {
@@ -21,6 +26,7 @@ type SemanticReviewRequest struct {
 	AgentResponse       string
 	VerificationSummary string
 	Toolbox             SemanticToolbox
+	Phase               SemanticReviewPhase
 }
 
 type SemanticReview struct {
@@ -36,11 +42,19 @@ type SemanticReviewer interface {
 }
 
 type SemanticReviewerDescriptor struct {
-	Provider           string `json:"provider"`
-	Model              string `json:"model"`
-	ToolCalling        bool   `json:"tool_calling,omitempty"`
-	AllowWorkspaceDiff bool   `json:"allow_workspace_diff,omitempty"`
-	AllowAttention     bool   `json:"allow_operator_attention,omitempty"`
+	Provider           string                `json:"provider"`
+	Model              string                `json:"model"`
+	ToolCalling        bool                  `json:"tool_calling,omitempty"`
+	AllowWorkspaceDiff bool                  `json:"allow_workspace_diff,omitempty"`
+	AllowAttention     bool                  `json:"allow_operator_attention,omitempty"`
+	MidTurn            SemanticMidTurnPolicy `json:"mid_turn,omitempty"`
+}
+
+type SemanticMidTurnPolicy struct {
+	Enabled        bool          `json:"enabled"`
+	Interval       time.Duration `json:"interval"`
+	MinOutputRunes int           `json:"min_output_runes"`
+	MaxReviews     int           `json:"max_reviews"`
 }
 
 type SemanticTool string

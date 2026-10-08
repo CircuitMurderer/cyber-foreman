@@ -207,6 +207,50 @@ func TestOpenAIReviewerAllowsExplicitOperatorAttentionTool(t *testing.T) {
 	}
 }
 
+func TestOpenAIReviewerMidTurnDisablesAttentionAndMarksPhase(t *testing.T) {
+	client := &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		var payload struct {
+			Messages []struct {
+				Content string `json:"content"`
+			} `json:"messages"`
+			Tools []struct {
+				Function struct {
+					Name string `json:"name"`
+				} `json:"function"`
+			} `json:"tools"`
+		}
+		if err := json.NewDecoder(request.Body).Decode(&payload); err != nil {
+			t.Fatal(err)
+		}
+		if len(payload.Messages) != 2 || !strings.Contains(payload.Messages[1].Content, `"review_phase":"mid_turn"`) {
+			t.Fatalf("mid-turn phase missing from request: %#v", payload.Messages)
+		}
+		for _, tool := range payload.Tools {
+			if tool.Function.Name == "request_operator_attention" {
+				t.Fatal("operator attention must not be advertised during a mid-turn review")
+			}
+		}
+		body := `{"choices":[{"message":{"tool_calls":[{"id":"redirect","type":"function","function":{"name":"request_follow_up","arguments":"{\"reason\":\"agent is editing the wrong package\",\"instruction\":\"Stop editing package B and implement the requested change in package A.\"}"}}]}}]}`
+		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(body))}, nil
+	})}
+	reviewer, err := NewOpenAIReviewer(OpenAIReviewerConfig{
+		BaseURL: "https://example.test/v1", Model: "model", Client: client,
+		ToolCalling: true, AllowAttention: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	review, err := reviewer.Review(context.Background(), SemanticReviewRequest{
+		Phase: SemanticReviewMidTurn, AgentResponse: "working in package B", Toolbox: &fakeSemanticToolbox{},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if review.Verdict != SemanticRedirect || review.ToolCall != "request_follow_up" {
+		t.Fatalf("review=%#v", review)
+	}
+}
+
 type fakeSemanticToolbox struct {
 	calls int
 }

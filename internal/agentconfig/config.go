@@ -44,14 +44,22 @@ type SupervisorConfig struct {
 }
 
 type SemanticReviewConfig struct {
-	Format             string `json:"format"`
-	BaseURL            string `json:"base_url"`
-	APIKeyEnv          string `json:"api_key_env"`
-	Model              string `json:"model"`
-	Timeout            string `json:"timeout,omitempty"`
-	ToolCalling        bool   `json:"tool_calling,omitempty"`
-	AllowWorkspaceDiff bool   `json:"allow_workspace_diff,omitempty"`
-	AllowAttention     bool   `json:"allow_operator_attention,omitempty"`
+	Format             string                 `json:"format"`
+	BaseURL            string                 `json:"base_url"`
+	APIKeyEnv          string                 `json:"api_key_env"`
+	Model              string                 `json:"model"`
+	Timeout            string                 `json:"timeout,omitempty"`
+	ToolCalling        bool                   `json:"tool_calling,omitempty"`
+	AllowWorkspaceDiff bool                   `json:"allow_workspace_diff,omitempty"`
+	AllowAttention     bool                   `json:"allow_operator_attention,omitempty"`
+	MidTurn            *SemanticMidTurnConfig `json:"mid_turn,omitempty"`
+}
+
+type SemanticMidTurnConfig struct {
+	Enabled        bool   `json:"enabled,omitempty"`
+	Interval       string `json:"interval,omitempty"`
+	MinOutputRunes int    `json:"min_output_runes,omitempty"`
+	MaxReviews     int    `json:"max_reviews,omitempty"`
 }
 
 type Profile struct {
@@ -175,6 +183,9 @@ func (c *SemanticReviewConfig) normalize() {
 	c.APIKeyEnv = strings.TrimSpace(c.APIKeyEnv)
 	c.Model = strings.TrimSpace(c.Model)
 	c.Timeout = strings.TrimSpace(c.Timeout)
+	if c.MidTurn != nil {
+		c.MidTurn.normalize()
+	}
 }
 
 func (c SemanticReviewConfig) Validate() error {
@@ -197,6 +208,14 @@ func (c SemanticReviewConfig) Validate() error {
 			return errors.New("timeout must be a positive duration such as 20s")
 		}
 	}
+	if c.MidTurn != nil {
+		if err := c.MidTurn.Validate(); err != nil {
+			return fmt.Errorf("mid_turn: %w", err)
+		}
+		if c.MidTurn.Enabled && !c.ToolCalling {
+			return errors.New("mid_turn requires tool_calling")
+		}
+	}
 	return nil
 }
 
@@ -206,6 +225,49 @@ func (c SemanticReviewConfig) TimeoutDuration() time.Duration {
 	}
 	timeout, _ := time.ParseDuration(c.Timeout)
 	return timeout
+}
+
+func (c *SemanticMidTurnConfig) normalize() {
+	c.Interval = strings.TrimSpace(c.Interval)
+	if !c.Enabled {
+		return
+	}
+	if c.Interval == "" {
+		c.Interval = "30s"
+	}
+	if c.MinOutputRunes == 0 {
+		c.MinOutputRunes = 256
+	}
+	if c.MaxReviews == 0 {
+		c.MaxReviews = 1
+	}
+}
+
+func (c SemanticMidTurnConfig) Validate() error {
+	if c.MinOutputRunes < 0 {
+		return errors.New("min_output_runes must not be negative")
+	}
+	if c.MaxReviews < 0 {
+		return errors.New("max_reviews must not be negative")
+	}
+	if c.Interval != "" {
+		interval, err := time.ParseDuration(c.Interval)
+		if err != nil || interval <= 0 {
+			return errors.New("interval must be a positive duration such as 30s")
+		}
+	}
+	if c.Enabled && (c.Interval == "" || c.MinOutputRunes < 1 || c.MaxReviews < 1) {
+		return errors.New("enabled mid-turn review requires a positive interval, min_output_runes, and max_reviews")
+	}
+	return nil
+}
+
+func (c SemanticMidTurnConfig) IntervalDuration() time.Duration {
+	if c.Interval == "" {
+		return 0
+	}
+	interval, _ := time.ParseDuration(c.Interval)
+	return interval
 }
 
 func (p *Profile) normalize() {

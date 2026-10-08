@@ -367,6 +367,64 @@ func TestSemanticReviewerRedirectsOnlyAfterDeterministicVerification(t *testing.
 	}
 }
 
+func TestMidTurnSemanticReviewerCancelsAndContinuesSameSession(t *testing.T) {
+	adapter := newPromptTestAdapter(promptModeMessageThenComplete)
+	reviewer := &scriptedSemanticReviewer{
+		midTurn: supervisor.SemanticMidTurnPolicy{
+			Enabled: true, Interval: 5 * time.Millisecond, MinOutputRunes: 1, MaxReviews: 1,
+		},
+		reviews: []supervisor.SemanticReview{
+			{Verdict: supervisor.SemanticRedirect, Reason: "agent is changing the wrong package", FollowUp: "Work only in the requested package and preserve unrelated files."},
+			{Verdict: supervisor.SemanticPass, Reason: "the corrected turn is aligned"},
+		},
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	bus := event.NewBus()
+	events := bus.Subscribe(ctx, 128)
+	service := NewService(ctx, adapter, bus)
+	service.SetSemanticReviewer(reviewer)
+	policy := supervisor.DefaultPolicy()
+	policy.IdleTimeout = time.Second
+	policy.HardTimeout = 5 * time.Second
+	task, err := service.StartTask(StartTaskRequest{
+		Prompt: "change package A", CWD: t.TempDir(), Supervision: &policy,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	final := waitForTerminalTask(t, service, task.ID)
+	if final.Status != domain.TaskCompleted {
+		t.Fatalf("unexpected final task: %#v", final)
+	}
+	prompts := adapter.recordedPrompts()
+	if len(prompts) != 2 || !strings.Contains(prompts[1], "Work only in the requested package") {
+		t.Fatalf("mid-turn correction prompts=%#v", prompts)
+	}
+	if adapter.cancelCalls.Load() != 1 {
+		t.Fatalf("cancel calls=%d, want 1", adapter.cancelCalls.Load())
+	}
+	phases := reviewer.reviewPhases()
+	if len(phases) != 2 || phases[0] != supervisor.SemanticReviewMidTurn || phases[1] != supervisor.SemanticReviewFinal {
+		t.Fatalf("review phases=%#v", phases)
+	}
+	foundDecision := false
+	for {
+		select {
+		case item := <-events:
+			decision, ok := item.Data.(supervisor.Decision)
+			if item.Type == domain.EventSupervisorDecision && ok && decision.RuleID == "semantic-review-mid-turn" {
+				foundDecision = decision.Action == supervisor.ActionCancelAndFollowUp && decision.BudgetCost.SemanticRedirects == 1
+			}
+		default:
+			if !foundDecision {
+				t.Fatal("mid-turn semantic correction decision was not recorded")
+			}
+			return
+		}
+	}
+}
+
 func TestSemanticReviewerFailureIsFailOpen(t *testing.T) {
 	adapter := newPromptTestAdapter(promptModeCompleteEveryTurnDelayed)
 	reviewer := &scriptedSemanticReviewer{err: errors.New("model endpoint unavailable")}
@@ -952,16 +1010,21 @@ type scriptedSemanticReviewer struct {
 	err            error
 	calls          int
 	allowAttention bool
+	midTurn        supervisor.SemanticMidTurnPolicy
+	phases         []supervisor.SemanticReviewPhase
 }
 
 func (r *scriptedSemanticReviewer) Descriptor() supervisor.SemanticReviewerDescriptor {
-	return supervisor.SemanticReviewerDescriptor{Provider: "test", Model: "reviewer", AllowAttention: r.allowAttention}
+	return supervisor.SemanticReviewerDescriptor{
+		Provider: "test", Model: "reviewer", AllowAttention: r.allowAttention, MidTurn: r.midTurn,
+	}
 }
 
 func (r *scriptedSemanticReviewer) Review(_ context.Context, request supervisor.SemanticReviewRequest) (supervisor.SemanticReview, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.calls++
+	r.phases = append(r.phases, request.Phase)
 	if request.AgentResponse == "" {
 		return supervisor.SemanticReview{}, errors.New("agent response was empty")
 	}
@@ -980,4 +1043,10 @@ func (r *scriptedSemanticReviewer) callCount() int {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return r.calls
+}
+
+func (r *scriptedSemanticReviewer) reviewPhases() []supervisor.SemanticReviewPhase {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]supervisor.SemanticReviewPhase(nil), r.phases...)
 }
