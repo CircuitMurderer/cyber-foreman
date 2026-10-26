@@ -29,14 +29,26 @@ type taskInput struct {
 }
 
 type supervisionPolicy struct {
-	IdleTimeout            string `json:"idle_timeout,omitempty"`
-	HardTimeout            string `json:"hard_timeout,omitempty"`
-	WaitingTimeout         string `json:"waiting_timeout,omitempty"`
-	MaxNudges              *int   `json:"max_nudges,omitempty"`
-	MaxRetries             *int   `json:"max_retries,omitempty"`
-	MaxTestRepairs         *int   `json:"max_test_repairs,omitempty"`
-	MaxSemanticRedirects   *int   `json:"max_semantic_redirects,omitempty"`
-	MaxSemanticEscalations *int   `json:"max_semantic_escalations,omitempty"`
+	IdleTimeout            string                `json:"idle_timeout,omitempty"`
+	HardTimeout            string                `json:"hard_timeout,omitempty"`
+	WaitingTimeout         string                `json:"waiting_timeout,omitempty"`
+	MaxNudges              *int                  `json:"max_nudges,omitempty"`
+	MaxRetries             *int                  `json:"max_retries,omitempty"`
+	MaxTestRepairs         *int                  `json:"max_test_repairs,omitempty"`
+	MaxSemanticRedirects   *int                  `json:"max_semantic_redirects,omitempty"`
+	MaxSemanticEscalations *int                  `json:"max_semantic_escalations,omitempty"`
+	SemanticReview         *semanticReviewPolicy `json:"semantic_review,omitempty"`
+}
+
+type semanticReviewPolicy struct {
+	FinalReview *bool    `json:"final_review,omitempty"`
+	Criteria    []string `json:"criteria,omitempty"`
+}
+
+type supervisionPlanRequest struct {
+	TaskPrompt        string `json:"task_prompt"`
+	SupervisionIntent string `json:"supervision_intent,omitempty"`
+	Adapter           string `json:"adapter,omitempty"`
 }
 
 type verificationRequest struct {
@@ -140,9 +152,13 @@ func (r createTaskRequest) appRequest() (app.StartTaskRequest, error) {
 		}
 		commands[i] = verification.Command{Argv: append([]string(nil), item.Argv...), Timeout: timeout}
 	}
+	semanticPolicy, err := r.Supervision.appSemanticPolicy()
+	if err != nil {
+		return app.StartTaskRequest{}, err
+	}
 	return app.StartTaskRequest{
 		Adapter: r.Adapter, Prompt: prompt, Command: append([]string(nil), r.Input.Command...),
-		Model: r.Model, CWD: r.Workspace, Supervision: policy, Interactive: prompt != "",
+		Model: r.Model, CWD: r.Workspace, Supervision: policy, SemanticReview: semanticPolicy, Interactive: prompt != "",
 		Worktree: r.WorkspaceMode == "worktree",
 		Verification: app.VerificationRequest{
 			Workspace: r.Verification.Workspace, Commands: commands,
@@ -156,6 +172,31 @@ func (r createTaskRequest) appRequest() (app.StartTaskRequest, error) {
 			},
 		},
 	}, nil
+}
+
+func (p *supervisionPolicy) appSemanticPolicy() (*app.TaskSemanticReviewPolicy, error) {
+	if p == nil || p.SemanticReview == nil {
+		return nil, nil
+	}
+	finalReview := true
+	if p.SemanticReview.FinalReview != nil {
+		finalReview = *p.SemanticReview.FinalReview
+	}
+	if len(p.SemanticReview.Criteria) > 8 {
+		return nil, errors.New("supervision.semantic_review.criteria must contain at most 8 items")
+	}
+	criteria := make([]string, 0, len(p.SemanticReview.Criteria))
+	for index, value := range p.SemanticReview.Criteria {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			return nil, fmt.Errorf("supervision.semantic_review.criteria[%d] must not be empty", index)
+		}
+		if len([]rune(value)) > 512 {
+			return nil, fmt.Errorf("supervision.semantic_review.criteria[%d] is too long", index)
+		}
+		criteria = append(criteria, value)
+	}
+	return &app.TaskSemanticReviewPolicy{FinalReview: finalReview, Criteria: criteria}, nil
 }
 
 func (p *supervisionPolicy) appPolicy() (*supervisor.Policy, error) {

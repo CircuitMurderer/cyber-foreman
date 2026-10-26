@@ -60,7 +60,7 @@ export interface Task {
   error?: string;
   created_at: string;
   updated_at: string;
-  available_actions?: Array<"interrupt" | "continue" | "finish" | "cancel" | "delete" | "resolve_permission">;
+  available_actions?: Array<"interrupt" | "continue" | "finish" | "cancel" | "delete" | "resolve_permission" | "review_result">;
   links: TaskLinks;
 }
 
@@ -104,12 +104,49 @@ export interface CreateTaskRequest {
     max_test_repairs?: number;
     max_semantic_redirects?: number;
     max_semantic_escalations?: number;
+    semantic_review?: {
+      final_review?: boolean;
+      criteria?: string[];
+    };
   };
   verification?: {
     workspace?: boolean;
     commands?: Array<{argv: string[]; timeout?: string}>;
     workspace_policy?: {require_changes?: boolean};
   };
+}
+
+export interface SemanticReview {
+  verdict: "pass" | "redirect" | "uncertain" | "attention";
+  reason: string;
+  follow_up?: string;
+  evidence?: string[];
+  unmet_requirements?: string[];
+  missing_evidence?: string[];
+}
+
+export interface SupervisionPlan {
+  summary: string;
+  rules: {
+    idle_timeout: string;
+    hard_timeout: string;
+    waiting_timeout: string;
+    max_nudges: number;
+    max_retries: number;
+    max_test_repairs: number;
+  };
+  verification: {
+    workspace: boolean;
+    require_changes: boolean;
+    command?: {argv: string[]; timeout: string; purpose: string};
+  };
+  semantic: {
+    final_review: boolean;
+    criteria: string[];
+    max_redirects: number;
+    max_escalations: number;
+  };
+  warnings?: string[];
 }
 
 export interface AuthStatus {
@@ -190,6 +227,17 @@ export function getTaskDiff(id: string): Promise<TaskDiff> {
 
 export function createTask(payload: CreateTaskRequest): Promise<Task> {
   return request<Task>("/api/v1/tasks", {method: "POST", body: JSON.stringify(payload)});
+}
+
+export function planSupervision(taskPrompt: string, supervisionIntent: string, adapter: string): Promise<SupervisionPlan> {
+  return request<SupervisionPlan>("/api/v1/supervision/plan", {
+    method: "POST",
+    body: JSON.stringify({task_prompt: taskPrompt, supervision_intent: supervisionIntent, adapter})
+  });
+}
+
+export function reviewTaskResult(id: string): Promise<SemanticReview> {
+  return request<SemanticReview>(`/api/v1/tasks/${encodeURIComponent(id)}/review`, {method: "POST"});
 }
 
 export function interruptTask(id: string, message: string): Promise<void> {

@@ -23,26 +23,33 @@ import (
 )
 
 var (
-	ErrTaskNotFound      = errors.New("task not found")
-	ErrInvalidTransition = errors.New("invalid task state transition")
-	ErrTaskNotRunning    = errors.New("task is not running")
-	ErrActionUnavailable = errors.New("task action is unavailable")
-	ErrTaskNotDeletable  = errors.New("running task must be stopped before deletion")
-	ErrDiffUnavailable   = errors.New("task does not use an isolated worktree")
-	ErrTaskForbidden     = errors.New("task is forbidden by deployment policy")
+	ErrTaskNotFound        = errors.New("task not found")
+	ErrInvalidTransition   = errors.New("invalid task state transition")
+	ErrTaskNotRunning      = errors.New("task is not running")
+	ErrActionUnavailable   = errors.New("task action is unavailable")
+	ErrTaskNotDeletable    = errors.New("running task must be stopped before deletion")
+	ErrDiffUnavailable     = errors.New("task does not use an isolated worktree")
+	ErrTaskForbidden       = errors.New("task is forbidden by deployment policy")
+	ErrSemanticUnavailable = errors.New("semantic supervisor is unavailable")
 )
 
 type StartTaskRequest struct {
-	Adapter       string              `json:"adapter,omitempty"`
-	Command       []string            `json:"command"`
-	Prompt        string              `json:"prompt,omitempty"`
-	Model         string              `json:"model,omitempty"`
-	InterruptWith string              `json:"interrupt_with,omitempty"`
-	Interactive   bool                `json:"interactive,omitempty"`
-	Worktree      bool                `json:"worktree,omitempty"`
-	CWD           string              `json:"cwd,omitempty"`
-	Verification  VerificationRequest `json:"verification,omitempty"`
-	Supervision   *supervisor.Policy  `json:"supervision,omitempty"`
+	Adapter        string                    `json:"adapter,omitempty"`
+	Command        []string                  `json:"command"`
+	Prompt         string                    `json:"prompt,omitempty"`
+	Model          string                    `json:"model,omitempty"`
+	InterruptWith  string                    `json:"interrupt_with,omitempty"`
+	Interactive    bool                      `json:"interactive,omitempty"`
+	Worktree       bool                      `json:"worktree,omitempty"`
+	CWD            string                    `json:"cwd,omitempty"`
+	Verification   VerificationRequest       `json:"verification,omitempty"`
+	Supervision    *supervisor.Policy        `json:"supervision,omitempty"`
+	SemanticReview *TaskSemanticReviewPolicy `json:"semantic_review,omitempty"`
+}
+
+type TaskSemanticReviewPolicy struct {
+	FinalReview bool     `json:"final_review"`
+	Criteria    []string `json:"criteria,omitempty"`
 }
 
 type VerificationRequest struct {
@@ -89,19 +96,60 @@ func (s *Service) SetSemanticReviewer(reviewer supervisor.SemanticReviewer) {
 }
 
 type taskRuntime struct {
-	adapter        agent.Adapter
-	sessionID      string
-	startRequest   agent.StartRequest
-	model          string
-	cancel         context.CancelFunc
-	actions        chan taskAction
-	verification   VerificationRequest
-	baseline       *verification.WorkspaceBaseline
-	prompt         string
-	interruptWith  string
-	interactive    bool
-	policy         supervisor.Policy
-	semanticReview supervisor.SemanticReviewer
+	adapter          agent.Adapter
+	sessionID        string
+	startRequest     agent.StartRequest
+	model            string
+	cancel           context.CancelFunc
+	actions          chan taskAction
+	verification     VerificationRequest
+	baseline         *verification.WorkspaceBaseline
+	prompt           string
+	interruptWith    string
+	interactive      bool
+	policy           supervisor.Policy
+	semanticReview   supervisor.SemanticReviewer
+	semanticFinal    bool
+	semanticCriteria []string
+	reviewState      *taskReviewState
+}
+
+type taskReviewContext struct {
+	instructions       []domain.ConversationMessageData
+	currentInstruction string
+	response           string
+	report             verificationReport
+	snapshot           supervisor.Snapshot
+}
+
+type taskReviewState struct {
+	mu    sync.RWMutex
+	ready bool
+	value taskReviewContext
+}
+
+func (s *taskReviewState) store(value taskReviewContext) {
+	if s == nil {
+		return
+	}
+	value.instructions = append([]domain.ConversationMessageData(nil), value.instructions...)
+	s.mu.Lock()
+	s.value, s.ready = value, true
+	s.mu.Unlock()
+}
+
+func (s *taskReviewState) load() (taskReviewContext, bool) {
+	if s == nil {
+		return taskReviewContext{}, false
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if !s.ready {
+		return taskReviewContext{}, false
+	}
+	value := s.value
+	value.instructions = append([]domain.ConversationMessageData(nil), value.instructions...)
+	return value, true
 }
 
 type taskAction struct {
@@ -371,6 +419,12 @@ func (s *Service) startQueuedTask(taskID string, req StartTaskRequest, adapter a
 	if req.Supervision != nil {
 		policy = *req.Supervision
 	}
+	semanticFinal := true
+	semanticCriteria := []string(nil)
+	if req.SemanticReview != nil {
+		semanticFinal = req.SemanticReview.FinalReview
+		semanticCriteria = append([]string(nil), req.SemanticReview.Criteria...)
+	}
 	s.mu.Lock()
 	s.runtimes[t.ID] = taskRuntime{
 		adapter: adapter, sessionID: session.ID,
@@ -378,7 +432,8 @@ func (s *Service) startQueuedTask(taskID string, req StartTaskRequest, adapter a
 		model:        model, cancel: cancel, actions: make(chan taskAction, 1),
 		verification: cloneVerificationRequest(req.Verification), baseline: baseline,
 		prompt: req.Prompt, interruptWith: req.InterruptWith, interactive: req.Interactive, policy: policy,
-		semanticReview: s.semanticReview,
+		semanticReview: s.semanticReview, semanticFinal: semanticFinal,
+		semanticCriteria: semanticCriteria, reviewState: &taskReviewState{},
 	}
 	s.mu.Unlock()
 	if err := s.transition(t.ID, domain.TaskRunning, "agent process started"); err != nil {
@@ -443,7 +498,7 @@ func (s *Service) AvailableActions(id string) []string {
 		return nil
 	}
 	runtime, hasRuntime := s.runtimes[id]
-	actions := make([]string, 0, 5)
+	actions := make([]string, 0, 6)
 	if hasRuntime && t.Kind == domain.TaskKindAgent && t.Status == domain.TaskRunning && runtime.adapter.Capabilities().CancelTurn {
 		actions = append(actions, "interrupt")
 	}
@@ -452,6 +507,11 @@ func (s *Service) AvailableActions(id string) []string {
 	}
 	if hasRuntime && runtime.interactive && t.Status == domain.TaskWaiting {
 		actions = append(actions, "finish")
+		if runtime.semanticReview != nil {
+			if _, ready := runtime.reviewState.load(); ready {
+				actions = append(actions, "review_result")
+			}
+		}
 	}
 	if hasRuntime && t.Kind == domain.TaskKindAgent && t.Status == domain.TaskPermission && agent.CanResolvePermission(runtime.adapter) {
 		actions = append(actions, "resolve_permission")

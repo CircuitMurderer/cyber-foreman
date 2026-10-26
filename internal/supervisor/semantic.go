@@ -22,6 +22,7 @@ const (
 type SemanticReviewRequest struct {
 	TaskID              string
 	TrustedInstructions []string
+	AcceptanceCriteria  []string
 	CurrentInstruction  string
 	AgentResponse       string
 	VerificationSummary string

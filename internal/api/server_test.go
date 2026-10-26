@@ -76,6 +76,42 @@ func TestCreateTaskRejectsNegativeSemanticEscalationBudget(t *testing.T) {
 	}
 }
 
+func TestCreateTaskAcceptsSemanticReviewPolicy(t *testing.T) {
+	service, bus := newAPITestService(t)
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/tasks", strings.NewReader(
+		`{"adapter":"test","input":{"command":["ignored"]},"supervision":{"semantic_review":{"final_review":false,"criteria":["preserve compatibility"]}}}`,
+	))
+	recorder := httptest.NewRecorder()
+	NewServer(service, bus).Handler().ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusAccepted {
+		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+}
+
+func TestCreateTaskRejectsOversizedSemanticCriteria(t *testing.T) {
+	service, bus := newAPITestService(t)
+	criteria := strings.Repeat("x", 513)
+	body := `{"adapter":"test","input":{"command":["ignored"]},"supervision":{"semantic_review":{"criteria":["` + criteria + `"]}}}`
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/tasks", strings.NewReader(body))
+	recorder := httptest.NewRecorder()
+	NewServer(service, bus).Handler().ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusBadRequest || !strings.Contains(recorder.Body.String(), "criteria") {
+		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+}
+
+func TestPlanSupervisionReportsMissingSemanticSupervisor(t *testing.T) {
+	service, bus := newAPITestService(t)
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/supervision/plan", strings.NewReader(
+		`{"task_prompt":"implement the endpoint"}`,
+	))
+	recorder := httptest.NewRecorder()
+	NewServer(service, bus).Handler().ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusConflict || !strings.Contains(recorder.Body.String(), "semantic_unavailable") {
+		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+}
+
 func TestEventStreamReplaysStableEnvelope(t *testing.T) {
 	service, bus := newAPITestService(t)
 	bus.Publish(domain.Event{TaskID: "task-replay", Type: domain.EventAgentOutput, Timestamp: time.Now().UTC(), Data: map[string]string{"line": "hello"}})

@@ -170,6 +170,7 @@ func (s *Service) consumePrompt(ctx context.Context, taskID string, events <-cha
 			review, reviewed := s.reviewAgentTurn(
 				reviewCtx, taskID, reviewSessionID, reviewer, instructions,
 				reviewInstruction, response, verificationReport{}, reviewSnapshot, supervisor.SemanticReviewMidTurn,
+				runtime.semanticCriteria,
 			)
 			midTurnOutcomes <- midTurnReviewOutcome{generation: reviewGeneration, review: review, reviewed: reviewed}
 		}()
@@ -537,10 +538,19 @@ func (s *Service) consumePrompt(ctx context.Context, taskID string, events <-cha
 				if currentInstructionSource == "operator" {
 					reviewInstruction = currentInstruction
 				}
-				review, reviewed := s.reviewAgentTurn(
-					ctx, taskID, runtime.sessionID, runtime.semanticReview, trustedPrompts,
-					reviewInstruction, turnResponse.String(), report, snapshot, supervisor.SemanticReviewFinal,
-				)
+				runtime.reviewState.store(taskReviewContext{
+					instructions: trustedPrompts, currentInstruction: reviewInstruction,
+					response: turnResponse.String(), report: report, snapshot: snapshot,
+				})
+				var review supervisor.SemanticReview
+				reviewed := false
+				if runtime.semanticFinal {
+					review, reviewed = s.reviewAgentTurn(
+						ctx, taskID, runtime.sessionID, runtime.semanticReview, trustedPrompts,
+						reviewInstruction, turnResponse.String(), report, snapshot, supervisor.SemanticReviewFinal,
+						runtime.semanticCriteria,
+					)
+				}
 				if reviewed {
 					switch review.Verdict {
 					case supervisor.SemanticRedirect:

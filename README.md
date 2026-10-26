@@ -10,6 +10,7 @@
 - SQLite 任务仓库、持久 sequence/replay 与实时事件总线
 - 初始确定性监督规则
 - 可选 OpenAI-compatible 语义复核与预算化自动纠偏
+- 开工前 AI 生成可编辑监督方案、结束后按需辅助验收
 - 本地 HTTP API 和 SSE 事件流
 - React、TypeScript、HeroUI v3 Web 控制台
 - 对话记录弹窗与 Agent 流式 chunk 完整回复聚合
@@ -209,6 +210,8 @@ curl -H "Authorization: Bearer $FOREMAN_API_TOKEN" \
 ### LLM 辅助监督
 
 Foreman 可以在 Agent 每轮结束且确定性 Git/命令验证通过后，再调用一个 OpenAI-compatible 模型做保守的语义复核。确定性规则始终优先：验证失败会直接进入原有修复或人工处理流程，LLM 不能把失败改成通过；LLM 超时、断网、返回非法 JSON 或判断为 `uncertain` 时均 fail-open，不影响原有完成流程。
+
+Web 控制台还可以在派发前根据“任务说明 + 希望重点监督的内容”生成一套监督建议，包括超时、恢复预算、验证方式和语义验收重点。建议只会回填到表单，操作员确认并点击派发后才生效；模型建议的验证命令只能是直接 argv，仍受部署命令白名单约束。任务进入 `waiting_input` 后，可以点击“AI 辅助验收”重新检查完整回复、确定性验证和工作区证据。手动验收只写入审计事件并返回建议，不会自动结束任务、执行命令或追加纠偏。
 
 默认 `config/agents.json` 使用 DeepSeek 做外网验证：
 

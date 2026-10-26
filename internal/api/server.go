@@ -16,6 +16,7 @@ import (
 	"cyber-foreman/internal/app"
 	"cyber-foreman/internal/domain"
 	"cyber-foreman/internal/event"
+	"cyber-foreman/internal/supervisor"
 )
 
 type Server struct {
@@ -45,18 +46,57 @@ func NewServerWithOptions(service *app.Service, bus *event.Bus, options ServerOp
 	s.mux.HandleFunc("POST /api/v1/auth/session", s.createAuthSession)
 	s.mux.HandleFunc("DELETE /api/v1/auth/session", s.deleteAuthSession)
 	s.mux.HandleFunc("GET /api/v1/adapters", s.listAdapters)
+	s.mux.HandleFunc("POST /api/v1/supervision/plan", s.planSupervision)
 	s.mux.HandleFunc("GET /api/v1/tasks", s.listTasks)
 	s.mux.HandleFunc("POST /api/v1/tasks", s.createTask)
 	s.mux.HandleFunc("GET /api/v1/tasks/{id}", s.getTask)
 	s.mux.HandleFunc("GET /api/v1/tasks/{id}/diff", s.taskDiff)
 	s.mux.HandleFunc("DELETE /api/v1/tasks/{id}", s.deleteTask)
 	s.mux.HandleFunc("POST /api/v1/tasks/{id}/actions", s.taskAction)
+	s.mux.HandleFunc("POST /api/v1/tasks/{id}/review", s.reviewTaskResult)
 	s.mux.HandleFunc("GET /api/v1/tasks/{id}/events", s.taskEvents)
 	s.mux.HandleFunc("GET /api/v1/events", s.events)
 	if options.Frontend != nil {
 		s.mux.Handle("GET /", options.Frontend)
 	}
 	return s
+}
+
+func (s *Server) planSupervision(w http.ResponseWriter, r *http.Request) {
+	var request supervisionPlanRequest
+	if err := decodeJSON(w, r, &request); err != nil {
+		writeAPIError(w, http.StatusBadRequest, "invalid_request", err)
+		return
+	}
+	request.TaskPrompt = strings.TrimSpace(request.TaskPrompt)
+	if request.TaskPrompt == "" {
+		writeAPIError(w, http.StatusBadRequest, "invalid_request", errors.New("task_prompt is required"))
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+	defer cancel()
+	plan, err := s.service.PlanSupervision(ctx, supervisor.SupervisionPlanRequest{
+		TaskPrompt: request.TaskPrompt, SupervisionIntent: strings.TrimSpace(request.SupervisionIntent),
+		Adapter: strings.TrimSpace(request.Adapter),
+	})
+	if err != nil {
+		status, code := classifyError(err)
+		writeAPIError(w, status, code, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, plan)
+}
+
+func (s *Server) reviewTaskResult(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+	defer cancel()
+	review, err := s.service.ReviewTaskResult(ctx, r.PathValue("id"))
+	if err != nil {
+		status, code := classifyError(err)
+		writeAPIError(w, status, code, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, review)
 }
 
 func (s *Server) Handler() http.Handler {
@@ -361,6 +401,8 @@ func classifyError(err error) (int, string) {
 		return http.StatusConflict, "diff_unavailable"
 	case errors.Is(err, app.ErrTaskForbidden):
 		return http.StatusForbidden, "task_forbidden"
+	case errors.Is(err, app.ErrSemanticUnavailable):
+		return http.StatusConflict, "semantic_unavailable"
 	case errors.Is(err, app.ErrTaskNotRunning), errors.Is(err, app.ErrActionUnavailable), errors.Is(err, app.ErrInvalidTransition), errors.Is(err, app.ErrTaskNotDeletable):
 		return http.StatusConflict, "action_conflict"
 	default:

@@ -220,6 +220,45 @@ func TestFinishInteractiveTaskCompletesAndClosesWaitingSession(t *testing.T) {
 	}
 }
 
+func TestManualResultReviewIsAdvisoryAndUsesTaskCriteria(t *testing.T) {
+	adapter := newPromptTestAdapter(promptModeCompleteEveryTurn)
+	reviewer := &scriptedSemanticReviewer{reviews: []supervisor.SemanticReview{{
+		Verdict: supervisor.SemanticPass, Reason: "evidence matches the requested behavior", Evidence: []string{"verification passed"},
+	}}}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	service := NewService(ctx, adapter, event.NewBus())
+	service.SetSemanticReviewer(reviewer)
+	task, err := service.StartTask(StartTaskRequest{
+		Prompt: "finish after this turn", Interactive: true, CWD: t.TempDir(),
+		SemanticReview: &TaskSemanticReviewPolicy{FinalReview: false, Criteria: []string{"preserve compatibility"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitForTaskStatus(t, service, task.ID, domain.TaskWaiting)
+	if reviewer.callCount() != 0 {
+		t.Fatalf("automatic final review ran despite per-task opt-out")
+	}
+	if !containsAction(service.AvailableActions(task.ID), "review_result") {
+		t.Fatalf("manual review action missing: %#v", service.AvailableActions(task.ID))
+	}
+	review, err := service.ReviewTaskResult(ctx, task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if review.Verdict != supervisor.SemanticPass || reviewer.callCount() != 1 {
+		t.Fatalf("review=%#v calls=%d", review, reviewer.callCount())
+	}
+	if criteria := reviewer.acceptanceCriteria(); len(criteria) != 1 || criteria[0] != "preserve compatibility" {
+		t.Fatalf("criteria=%#v", criteria)
+	}
+	current, err := service.GetTask(task.ID)
+	if err != nil || current.Status != domain.TaskWaiting {
+		t.Fatalf("manual review changed task state: %#v err=%v", current, err)
+	}
+}
+
 func containsAction(actions []string, target string) bool {
 	for _, action := range actions {
 		if action == target {
@@ -1156,6 +1195,7 @@ type scriptedSemanticReviewer struct {
 	allowAttention bool
 	midTurn        supervisor.SemanticMidTurnPolicy
 	phases         []supervisor.SemanticReviewPhase
+	criteria       []string
 }
 
 func (r *scriptedSemanticReviewer) Descriptor() supervisor.SemanticReviewerDescriptor {
@@ -1169,6 +1209,7 @@ func (r *scriptedSemanticReviewer) Review(_ context.Context, request supervisor.
 	defer r.mu.Unlock()
 	r.calls++
 	r.phases = append(r.phases, request.Phase)
+	r.criteria = append([]string(nil), request.AcceptanceCriteria...)
 	if request.AgentResponse == "" {
 		return supervisor.SemanticReview{}, errors.New("agent response was empty")
 	}
@@ -1181,6 +1222,12 @@ func (r *scriptedSemanticReviewer) Review(_ context.Context, request supervisor.
 	review := r.reviews[0]
 	r.reviews = r.reviews[1:]
 	return review, nil
+}
+
+func (r *scriptedSemanticReviewer) acceptanceCriteria() []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]string(nil), r.criteria...)
 }
 
 func (r *scriptedSemanticReviewer) callCount() int {

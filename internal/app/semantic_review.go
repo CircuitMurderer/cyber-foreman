@@ -25,6 +25,22 @@ func (s *Service) reviewAgentTurn(
 	report verificationReport,
 	snapshot supervisor.Snapshot,
 	phase supervisor.SemanticReviewPhase,
+	criteria []string,
+) (supervisor.SemanticReview, bool) {
+	return s.reviewAgentTurnWithTrigger(ctx, taskID, sessionID, reviewer, instructions, currentInstruction, response, report, snapshot, phase, criteria, "automatic")
+}
+
+func (s *Service) reviewAgentTurnWithTrigger(
+	ctx context.Context,
+	taskID, sessionID string,
+	reviewer supervisor.SemanticReviewer,
+	instructions []domain.ConversationMessageData,
+	currentInstruction, response string,
+	report verificationReport,
+	snapshot supervisor.Snapshot,
+	phase supervisor.SemanticReviewPhase,
+	criteria []string,
+	trigger string,
 ) (supervisor.SemanticReview, bool) {
 	if reviewer == nil || strings.TrimSpace(response) == "" {
 		return supervisor.SemanticReview{}, false
@@ -36,7 +52,7 @@ func (s *Service) reviewAgentTurn(
 		Data: map[string]any{
 			"provider": descriptor.Provider, "model": descriptor.Model,
 			"tool_calling": descriptor.ToolCalling, "allow_workspace_diff": descriptor.AllowWorkspaceDiff,
-			"allow_operator_attention": descriptor.AllowAttention, "phase": phase,
+			"allow_operator_attention": descriptor.AllowAttention, "phase": phase, "trigger": trigger,
 		},
 	})
 	trusted := make([]string, 0, len(instructions))
@@ -47,7 +63,8 @@ func (s *Service) reviewAgentTurn(
 	}
 	review, err := reviewer.Review(ctx, supervisor.SemanticReviewRequest{
 		TaskID: taskID, TrustedInstructions: trusted, CurrentInstruction: currentInstruction,
-		AgentResponse: response, VerificationSummary: semanticVerificationSummaryForPhase(report, phase), Phase: phase,
+		AcceptanceCriteria: append([]string(nil), criteria...),
+		AgentResponse:      response, VerificationSummary: semanticVerificationSummaryForPhase(report, phase), Phase: phase,
 		Toolbox: &semanticToolbox{
 			service: s, taskID: taskID, snapshot: snapshot, report: report,
 			allowWorkspaceDiff: descriptor.AllowWorkspaceDiff,
@@ -59,7 +76,7 @@ func (s *Service) reviewAgentTurn(
 		review = supervisor.SemanticReview{}
 	}
 	data := map[string]any{
-		"provider": descriptor.Provider, "model": descriptor.Model, "success": err == nil, "phase": phase,
+		"provider": descriptor.Provider, "model": descriptor.Model, "success": err == nil, "phase": phase, "trigger": trigger,
 	}
 	if err != nil {
 		data["error"] = err.Error()
@@ -85,6 +102,52 @@ func (s *Service) reviewAgentTurn(
 		Timestamp: time.Now().UTC(), Data: data,
 	})
 	return review, err == nil
+}
+
+// PlanSupervision asks the configured auxiliary model for a bounded, editable
+// suggestion. The returned plan does not execute commands or create a task.
+func (s *Service) PlanSupervision(ctx context.Context, request supervisor.SupervisionPlanRequest) (supervisor.SupervisionPlan, error) {
+	planner, ok := s.semanticReview.(supervisor.SupervisionPlanner)
+	if !ok || planner == nil {
+		return supervisor.SupervisionPlan{}, ErrSemanticUnavailable
+	}
+	return planner.PlanSupervision(ctx, request)
+}
+
+// ReviewTaskResult performs an advisory, read-only final review. It records
+// evidence in the event stream but deliberately does not transition the task
+// or execute a suggested follow-up.
+func (s *Service) ReviewTaskResult(ctx context.Context, taskID string) (supervisor.SemanticReview, error) {
+	s.mu.RLock()
+	task := s.tasks[taskID]
+	status := domain.TaskStatus("")
+	if task != nil {
+		status = task.Status
+	}
+	runtime, ok := s.runtimes[taskID]
+	s.mu.RUnlock()
+	if task == nil {
+		return supervisor.SemanticReview{}, ErrTaskNotFound
+	}
+	if !ok || status != domain.TaskWaiting {
+		return supervisor.SemanticReview{}, ErrActionUnavailable
+	}
+	if runtime.semanticReview == nil {
+		return supervisor.SemanticReview{}, ErrSemanticUnavailable
+	}
+	state, ready := runtime.reviewState.load()
+	if !ready {
+		return supervisor.SemanticReview{}, ErrActionUnavailable
+	}
+	review, reviewed := s.reviewAgentTurnWithTrigger(
+		ctx, taskID, runtime.sessionID, runtime.semanticReview, state.instructions,
+		state.currentInstruction, state.response, state.report, state.snapshot,
+		supervisor.SemanticReviewFinal, runtime.semanticCriteria, "manual",
+	)
+	if !reviewed {
+		return supervisor.SemanticReview{}, errors.New("semantic result review failed")
+	}
+	return review, nil
 }
 
 type semanticToolbox struct {

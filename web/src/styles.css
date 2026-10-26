@@ -218,6 +218,11 @@ select.control { appearance: auto; }
 .advanced-header span { color: var(--muted); font-size: 9px; }
 .dispatch-button { min-height: 42px; font-weight: 700; letter-spacing: .01em; }
 .dispatch-button svg { margin-right: 4px; }
+.ai-plan-box { display: grid; gap: 8px; padding: 10px; border: 1px dashed var(--accent-border); border-radius: 10px; background: var(--accent-soft); }
+.ai-plan-box button { justify-self: start; }
+.plan-note { margin: 0; color: var(--muted-strong); font-size: 10px; line-height: 1.5; }
+.semantic-toggle { align-self: end; padding-bottom: 5px; }
+.semantic-criteria-field { grid-column: 1 / -1; }
 .inline-error { padding: 8px 10px; color: var(--danger); border: 1px solid color-mix(in srgb, var(--danger) 26%, transparent); background: var(--danger-soft-custom); border-radius: 8px; font-size: 11px; }
 
 .task-list-panel { margin-top: 24px; }
@@ -307,6 +312,16 @@ select.control { appearance: auto; }
 .action-dialog { display: grid; gap: 10px; }
 .action-textarea { min-height: 94px; }
 .action-dock { display: flex; justify-content: flex-end; align-items: center; gap: 9px; min-height: 46px; }
+.manual-review { display: grid; gap: 7px; padding: 11px; border: 1px solid var(--line); border-radius: 9px; background: var(--panel-raised); color: var(--muted-strong); }
+.manual-review > div:first-child { display: flex; align-items: center; gap: 7px; color: var(--text-strong); }
+.manual-review.passed > div:first-child { color: var(--success); }
+.manual-review.needs-attention > div:first-child { color: var(--warning); }
+.manual-review p, .manual-review small { margin: 0; line-height: 1.55; }
+.manual-review p { font-size: 11px; }
+.manual-review small { color: var(--subtle); font-size: 9px; }
+.manual-review-list { display: block !important; }
+.manual-review-list > strong { font-size: 10px; }
+.manual-review-list ul { margin: 4px 0 0; padding-left: 18px; font-size: 10px; line-height: 1.55; }
 .action-orb {
   position: relative; width: 42px; height: 42px; display: grid; place-items: center; flex: 0 0 auto;
   border: 1px solid var(--line); border-radius: 50%; color: var(--muted-strong); background: var(--panel-solid);

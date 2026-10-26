@@ -1,4 +1,4 @@
-import {useMemo, useState} from "react";
+import {useEffect, useMemo, useState} from "react";
 import {Button, Card, Chip, Modal, useOverlayState} from "@heroui/react";
 import {
   Activity,
@@ -15,6 +15,7 @@ import {
   ScrollText,
   ShieldAlert,
   ShieldCheck,
+  Sparkles,
   TerminalSquare
 } from "lucide-react";
 import {
@@ -24,9 +25,11 @@ import {
   finishTask,
   getTask,
   interruptTask,
+  reviewTaskResult,
   resolvePermission,
   terminalStatuses,
   type ForemanEvent,
+  type SemanticReview,
   type Task
 } from "../api";
 import {absoluteTime, shortID, statusLabel, statusTone} from "../status";
@@ -46,9 +49,15 @@ export function TaskDetail({task, onChanged}: TaskDetailProps) {
   const [message, setMessage] = useState("");
   const [acting, setActing] = useState(false);
   const [actionError, setActionError] = useState("");
+  const [manualReview, setManualReview] = useState<SemanticReview>();
 
   const metrics = useMemo(() => summarize(events), [events]);
   const permission = useMemo(() => pendingPermission(events), [events]);
+
+  useEffect(() => {
+    setManualReview(undefined);
+    setActionError("");
+  }, [task?.id]);
 
   if (!task) {
     return (
@@ -124,6 +133,20 @@ export function TaskDetail({task, onChanged}: TaskDetailProps) {
     }
   }
 
+  async function reviewResult() {
+    if (!task) return;
+    setActing(true);
+    setActionError("");
+    try {
+      setManualReview(await reviewTaskResult(task.id));
+      await refresh();
+    } catch (error) {
+      setActionError(errorMessage(error));
+    } finally {
+      setActing(false);
+    }
+  }
+
   async function answerPermission(requestID: string, optionID: string) {
     if (!task) return;
     setActing(true);
@@ -142,6 +165,7 @@ export function TaskDetail({task, onChanged}: TaskDetailProps) {
   const canInterrupt = actions.has("interrupt") || task.kind === "agent" && task.status === "running";
   const canContinue = actions.has("continue");
   const canFinish = actions.has("finish");
+  const canReview = actions.has("review_result");
   const canCancel = actions.has("cancel") || !terminalStatuses.has(task.status);
 
   return (
@@ -201,7 +225,7 @@ export function TaskDetail({task, onChanged}: TaskDetailProps) {
         <Metric icon={<CheckCircle2 size={17} />} value={metrics.verifications} label="验证结果" kind="verifications" events={events} />
       </div>
 
-      {(canInterrupt || canContinue || canFinish || canCancel) && (
+      {(canInterrupt || canContinue || canFinish || canReview || canCancel) && (
         <Card className="action-card" variant="secondary">
           <Card.Header>
             <div>
@@ -241,6 +265,11 @@ export function TaskDetail({task, onChanged}: TaskDetailProps) {
                     trigger={<ActionOrb label="结束任务" tone="success" disabled={acting}><Check size={19} /></ActionOrb>}
                   />
                 )}
+                {canReview && (
+                  <ActionOrb label="AI 辅助验收" tone="success" disabled={acting} onClick={reviewResult}>
+                    <Sparkles size={18} />
+                  </ActionOrb>
+                )}
                 {canCancel && (
                   <ConfirmationDialog
                     title="停止当前任务？"
@@ -253,6 +282,16 @@ export function TaskDetail({task, onChanged}: TaskDetailProps) {
               </div>
             </div>
             {actionError && <div className="inline-error">{actionError}</div>}
+            {manualReview && (
+              <div className={`manual-review ${manualReview.verdict === "pass" ? "passed" : "needs-attention"}`}>
+                <div><Sparkles size={16} /><strong>AI 辅助验收：{reviewVerdictLabel(manualReview.verdict)}</strong></div>
+                <p>{manualReview.reason}</p>
+                {manualReview.evidence && manualReview.evidence.length > 0 && <ReviewItems title="证据" items={manualReview.evidence} />}
+                {manualReview.unmet_requirements && manualReview.unmet_requirements.length > 0 && <ReviewItems title="未满足项" items={manualReview.unmet_requirements} />}
+                {manualReview.missing_evidence && manualReview.missing_evidence.length > 0 && <ReviewItems title="缺少证据" items={manualReview.missing_evidence} />}
+                <small>该结论仅供参考，不会自动结束任务或执行纠偏。</small>
+              </div>
+            )}
           </Card.Content>
         </Card>
       )}
@@ -268,6 +307,17 @@ export function TaskDetail({task, onChanged}: TaskDetailProps) {
       </div>
     </section>
   );
+}
+
+function ReviewItems({title, items}: {title: string; items: string[]}) {
+  return <div className="manual-review-list"><strong>{title}</strong><ul>{items.map((item, index) => <li key={`${title}-${index}`}>{item}</li>)}</ul></div>;
+}
+
+function reviewVerdictLabel(verdict: SemanticReview["verdict"]): string {
+  if (verdict === "pass") return "通过";
+  if (verdict === "redirect") return "建议继续修正";
+  if (verdict === "attention") return "建议人工确认";
+  return "证据不足";
 }
 
 function ActionOrb({

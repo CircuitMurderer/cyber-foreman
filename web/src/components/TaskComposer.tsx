@@ -1,9 +1,10 @@
 import {useEffect, useMemo, useState, type FormEvent} from "react";
 import {Button, Card} from "@heroui/react";
-import {Bot, CheckCircle2, ChevronDown, ChevronUp, Command, FolderGit2, Plus, ShieldCheck, TimerReset} from "lucide-react";
+import {Bot, CheckCircle2, ChevronDown, ChevronUp, Command, FolderGit2, Plus, ShieldCheck, Sparkles, TimerReset} from "lucide-react";
 import {
   createTask,
   errorMessage,
+  planSupervision,
   type AdapterDescriptor,
   type CreateTaskRequest,
   type Task,
@@ -31,6 +32,9 @@ export function TaskComposer({adapters, onCreated}: TaskComposerProps) {
   const [maxTestRepairs, setMaxTestRepairs] = useState(2);
   const [maxSemanticRedirects, setMaxSemanticRedirects] = useState(1);
   const [maxSemanticEscalations, setMaxSemanticEscalations] = useState(1);
+  const [supervisionIntent, setSupervisionIntent] = useState("");
+  const [semanticCriteria, setSemanticCriteria] = useState("");
+  const [finalSemanticReview, setFinalSemanticReview] = useState(true);
   const [verifyWorkspace, setVerifyWorkspace] = useState(true);
   const [requireChanges, setRequireChanges] = useState(true);
   const [runTests, setRunTests] = useState(false);
@@ -38,6 +42,8 @@ export function TaskComposer({adapters, onCreated}: TaskComposerProps) {
   const [testTimeout, setTestTimeout] = useState("10m");
   const [advanced, setAdvanced] = useState(false);
   const [submitting, setSubmitting] = useState(false);
+  const [planning, setPlanning] = useState(false);
+  const [planNote, setPlanNote] = useState("");
   const [error, setError] = useState("");
 
   const selectedAdapter = useMemo(
@@ -107,7 +113,11 @@ export function TaskComposer({adapters, onCreated}: TaskComposerProps) {
                 max_retries: maxRetries,
                 max_test_repairs: maxTestRepairs,
                 max_semantic_redirects: maxSemanticRedirects,
-                max_semantic_escalations: maxSemanticEscalations
+                max_semantic_escalations: maxSemanticEscalations,
+                semantic_review: {
+                  final_review: finalSemanticReview,
+                  criteria: semanticCriteria.split("\n").map((item) => item.trim()).filter(Boolean)
+                }
               }
             }
           : {}),
@@ -126,6 +136,42 @@ export function TaskComposer({adapters, onCreated}: TaskComposerProps) {
       setError(errorMessage(caught));
     } finally {
       setSubmitting(false);
+    }
+  }
+
+  async function generatePlan() {
+    if (!prompt.trim()) {
+      setError("请先填写任务说明，再让 AI 配置监督方案");
+      return;
+    }
+    setPlanning(true);
+    setError("");
+    setPlanNote("");
+    try {
+      const plan = await planSupervision(prompt.trim(), supervisionIntent.trim(), adapter);
+      setIdleTimeout(plan.rules.idle_timeout);
+      setHardTimeout(plan.rules.hard_timeout);
+      setWaitingTimeout(plan.rules.waiting_timeout);
+      setMaxNudges(plan.rules.max_nudges);
+      setMaxRetries(plan.rules.max_retries);
+      setMaxTestRepairs(plan.rules.max_test_repairs);
+      setMaxSemanticRedirects(plan.semantic.max_redirects);
+      setMaxSemanticEscalations(plan.semantic.max_escalations);
+      setFinalSemanticReview(plan.semantic.final_review);
+      setSemanticCriteria(plan.semantic.criteria.join("\n"));
+      setVerifyWorkspace(plan.verification.workspace);
+      setRequireChanges(plan.verification.require_changes);
+      setRunTests(Boolean(plan.verification.command));
+      if (plan.verification.command) {
+        setTestCommand(joinCommand(plan.verification.command.argv));
+        setTestTimeout(plan.verification.command.timeout);
+      }
+      setAdvanced(true);
+      setPlanNote([plan.summary, ...(plan.warnings ?? [])].join(" · "));
+    } catch (caught) {
+      setError(errorMessage(caught));
+    } finally {
+      setPlanning(false);
     }
   }
 
@@ -194,6 +240,22 @@ export function TaskComposer({adapters, onCreated}: TaskComposerProps) {
               <Field label="模型">
                 <input className="control" value={model} onChange={(event) => setModel(event.target.value)} placeholder={selectedAdapter?.default_model || "留空使用 Agent 默认模型"} disabled={submitting} />
               </Field>
+              <div className="ai-plan-box">
+                <Field label="希望重点监督什么（可选）" icon={<Sparkles size={15} />}>
+                  <textarea
+                    className="control textarea"
+                    value={supervisionIntent}
+                    onChange={(event) => setSupervisionIntent(event.target.value)}
+                    placeholder="例如：重点检查边界条件、不得改动数据库迁移……"
+                    rows={2}
+                    disabled={submitting || planning}
+                  />
+                </Field>
+                <Button variant="secondary" type="button" isDisabled={planning || submitting || !prompt.trim()} onPress={() => void generatePlan()}>
+                  <Sparkles size={15} /> {planning ? "正在生成…" : "AI 生成监督方案"}
+                </Button>
+                {planNote && <p className="plan-note">{planNote}（已填入下方，可继续修改）</p>}
+              </div>
             </>
           ) : (
             <Field label="命令" icon={<Command size={15} />} hint="直接 argv 执行，支持单双引号，不经过 shell">
@@ -259,6 +321,15 @@ export function TaskComposer({adapters, onCreated}: TaskComposerProps) {
               <Field label="最大测试修复"><input className="control" type="number" min={0} value={maxTestRepairs} onChange={(event) => setMaxTestRepairs(Number(event.target.value))} /></Field>
               <Field label="最大语义纠偏"><input className="control" type="number" min={0} value={maxSemanticRedirects} onChange={(event) => setMaxSemanticRedirects(Number(event.target.value))} /></Field>
               <Field label="最大人工升级"><input className="control" type="number" min={0} value={maxSemanticEscalations} onChange={(event) => setMaxSemanticEscalations(Number(event.target.value))} /></Field>
+              <label className="check-control semantic-toggle">
+                <input type="checkbox" checked={finalSemanticReview} onChange={(event) => setFinalSemanticReview(event.target.checked)} />
+                <span><Sparkles size={16} /> 完成前自动语义复核</span>
+              </label>
+              <div className="semantic-criteria-field">
+                <Field label="语义验收重点（每行一项）">
+                  <textarea className="control textarea" rows={3} value={semanticCriteria} onChange={(event) => setSemanticCriteria(event.target.value)} placeholder="例如：说明新增接口的鉴权行为" />
+                </Field>
+              </div>
             </div>
           )}
 
@@ -333,4 +404,8 @@ function splitCommand(value: string): string[] {
   if (current) result.push(current);
   if (result.length === 0) throw new Error("请填写命令");
   return result;
+}
+
+function joinCommand(argv: string[]): string {
+  return argv.map((value) => /^[A-Za-z0-9_./:=+-]+$/.test(value) ? value : `'${value.replaceAll("'", "'\\''")}'`).join(" ");
 }
