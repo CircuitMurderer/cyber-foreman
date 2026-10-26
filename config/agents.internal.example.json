@@ -1,0 +1,60 @@
+{
+  "agents": [
+    {
+      "name": "opencode",
+      "driver": "acp",
+      "command": "/usr/local/bin/opencode",
+      "args": ["acp"],
+      "version_args": ["--version"],
+      "default_workspace": "/srv/repos",
+      "default_model": "openai/qwen3.8",
+      "provider": {
+        "format": "openai",
+        "base_url": "http://qwen-api.internal/v1",
+        "api_key_env": "FOREMAN_AGENT_API_KEY_OPENAI"
+      }
+    },
+    {
+      "name": "grok",
+      "driver": "acp",
+      "command": "/usr/local/bin/grok",
+      "args": ["--no-auto-update", "agent", "stdio"],
+      "version_args": ["version"],
+      "auth_optional": true,
+      "default_workspace": "/srv/repos",
+      "default_model": "internal-qwen",
+      "provider": {
+        "format": "openai",
+        "base_url": "http://qwen-api.internal/v1",
+        "api_key_env": "FOREMAN_AGENT_API_KEY_OPENAI"
+      }
+    }
+  ],
+  "security": {
+    "workspace_roots": ["/srv/repos"],
+    "command_allowlist": [
+      ["go", "test"],
+      ["./scripts/test"],
+      ["pnpm", "check"]
+    ],
+    "api_token_env": "FOREMAN_API_TOKEN"
+  },
+  "supervisor": {
+    "semantic_review": {
+      "format": "openai",
+      "base_url": "http://qwen-api.internal/v1",
+      "api_key_env": "FOREMAN_AGENT_API_KEY_OPENAI",
+      "model": "qwen3.8",
+      "timeout": "60s",
+      "tool_calling": false,
+      "allow_workspace_diff": false,
+      "allow_operator_attention": false,
+      "mid_turn": {
+        "enabled": false,
+        "interval": "60s",
+        "min_output_runes": 512,
+        "max_reviews": 1
+      }
+    }
+  }
+}

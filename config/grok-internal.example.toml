@@ -1,0 +1,15 @@
+# Copy to the Grok Build configuration directory used by your installation.
+# The API key is read from the environment and is not stored in this file.
+
+[models]
+default = "internal-qwen"
+session_summary = "internal-qwen"
+
+[model.internal-qwen]
+name = "Internal Qwen (OpenAI compatible)"
+model = "qwen3.8"
+base_url = "http://qwen-api.internal/v1/"
+env_key = "FOREMAN_AGENT_API_KEY_OPENAI"
+api_backend = "chat_completions"
+context_window = 131072
+max_completion_tokens = 32768

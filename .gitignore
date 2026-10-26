@@ -5,6 +5,7 @@ config/agents.local.json
 .cache/
 /bin/
 /data/
+/release/
 *.log
 web/node_modules/
 web/dist/
