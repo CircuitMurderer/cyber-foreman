@@ -30,10 +30,13 @@ type SemanticReviewRequest struct {
 }
 
 type SemanticReview struct {
-	Verdict  SemanticVerdict `json:"verdict"`
-	Reason   string          `json:"reason"`
-	FollowUp string          `json:"follow_up,omitempty"`
-	ToolCall string          `json:"-"`
+	Verdict           SemanticVerdict `json:"verdict"`
+	Reason            string          `json:"reason"`
+	FollowUp          string          `json:"follow_up,omitempty"`
+	Evidence          []string        `json:"evidence,omitempty"`
+	UnmetRequirements []string        `json:"unmet_requirements,omitempty"`
+	MissingEvidence   []string        `json:"missing_evidence,omitempty"`
+	ToolCall          string          `json:"-"`
 }
 
 type SemanticReviewer interface {

@@ -239,7 +239,7 @@ Foreman 可以在 Agent 每轮结束且确定性 Git/命令验证通过后，再
 
 内网部署只需把 `base_url`、`model` 和 `api_key_env` 换成本地 Qwen 的 OpenAI-compatible 参数；无鉴权端点可以省略 `api_key_env`。如果配置了变量名但变量缺失，Foreman 会输出警告并关闭辅助复核，其余功能继续运行。每个任务的“最大语义纠偏”默认是 1，设为 0 可禁用该任务的自动纠偏；预算用尽后的 LLM 建议只保留在事件记录中，不会形成无限循环。
 
-启用 `tool_calling` 后，复核模型可以调用 Foreman 提供的受控工具：读取任务状态与预算、读取不含消息正文的最近生命周期摘要、读取不含命令参数/文件内容/原始输出的 Agent 工具活动，以及提交 `accept_turn`、`report_uncertain` 或 `request_follow_up`。其中 `request_follow_up` 只是提议，仍会转换为原有的 `semantic_redirect` Decision，并经过状态、去重和语义纠偏预算后才会追加给 Agent；模型不能调用任意 Shell、文件系统或 Adapter 方法。
+启用 `tool_calling` 后，复核模型可以调用 Foreman 提供的受控工具：读取任务状态与预算、读取不含消息正文的最近生命周期摘要、读取不含命令参数/文件内容/原始输出的 Agent 工具活动，以及提交 `accept_turn`、`report_uncertain` 或 `request_follow_up`。任务状态工具还会返回有界的变更文件列表和验证命令元数据，但不会返回验证命令原始输出。最终 `accept_turn` 必须列出独立验收证据；`request_follow_up` 必须列出未满足的显式要求及其证据；证据不足时必须通过 `report_uncertain` 说明缺少什么。任务总结会展示这些结构化结果。其中 `request_follow_up` 只是提议，仍会转换为原有的 `semantic_redirect` Decision，并经过状态、去重和语义纠偏预算后才会追加给 Agent；模型不能调用任意 Shell、文件系统或 Adapter 方法。
 
 `allow_operator_attention` 默认关闭。显式打开后，模型还可以调用 `request_operator_attention`，将无法通过一次 follow-up 安全消除的明确风险升级为 `attention_required`。该请求使用独立的“最大人工升级”预算，仍经过 Executor；操作员可以在界面查看原因并继续同一 Agent session。模型不能用它把确定性失败改成成功，未开启能力、预算耗尽或调用异常时均 fail-open。
 

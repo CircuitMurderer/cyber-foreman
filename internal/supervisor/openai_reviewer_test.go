@@ -28,7 +28,7 @@ func TestOpenAIReviewerUsesChatCompletionsAndParsesJSON(t *testing.T) {
 		if payload.Model != "deepseek-chat" || len(payload.Messages) != 2 || !strings.Contains(payload.Messages[1].Content, "untrusted_agent_response") {
 			t.Fatalf("unexpected payload: %#v", payload)
 		}
-		body := "{\"choices\":[{\"message\":{\"content\":\"```json\\n{\\\"verdict\\\":\\\"redirect\\\",\\\"reason\\\":\\\"missing tests\\\",\\\"follow_up\\\":\\\"Run the required tests and report the result.\\\"}\\n```\"}}]}"
+		body := "{\"choices\":[{\"message\":{\"content\":\"```json\\n{\\\"verdict\\\":\\\"redirect\\\",\\\"reason\\\":\\\"missing tests\\\",\\\"follow_up\\\":\\\"Run the required tests and report the result.\\\",\\\"evidence\\\":[\\\"No test result was reported.\\\"],\\\"unmet_requirements\\\":[\\\"Required tests must pass.\\\"],\\\"missing_evidence\\\":[]}\\n```\"}}]}"
 		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(body))}, nil
 	})}
 
@@ -64,6 +64,30 @@ func TestParseSemanticReviewRejectsUnsafeOrMalformedOutput(t *testing.T) {
 	}
 }
 
+func TestSemanticReviewRequiresEvidenceBackedFinalVerdict(t *testing.T) {
+	pass, err := parseSemanticReview(`{"verdict":"pass","reason":"looks done","follow_up":""}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := validateSemanticReviewEvidence(pass, SemanticReviewFinal); err == nil || !strings.Contains(err.Error(), "requires evidence") {
+		t.Fatalf("final pass without evidence was accepted: %v", err)
+	}
+	redirect, err := parseSemanticReview(`{
+		"verdict":"redirect",
+		"reason":"required endpoint is missing",
+		"follow_up":"Implement the endpoint and rerun tests.",
+		"evidence":["Workspace evidence lists no handler file."],
+		"unmet_requirements":["Expose the requested REST endpoint."]
+	}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	validated, err := validateSemanticReviewEvidence(redirect, SemanticReviewFinal)
+	if err != nil || len(validated.Evidence) != 1 || len(validated.UnmetRequirements) != 1 {
+		t.Fatalf("review=%#v err=%v", validated, err)
+	}
+}
+
 func TestOpenAIReviewerDoesNotExposeKeyInHTTPError(t *testing.T) {
 	client := &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
 		return &http.Response{
@@ -86,7 +110,7 @@ func TestOpenAIReviewerSupportsUnauthenticatedLocalEndpoint(t *testing.T) {
 		if authorization := request.Header.Get("Authorization"); authorization != "" {
 			t.Fatalf("unexpected authorization header %q", authorization)
 		}
-		body := `{"choices":[{"message":{"content":"{\"verdict\":\"pass\",\"reason\":\"aligned\",\"follow_up\":\"\"}"}}]}`
+		body := `{"choices":[{"message":{"content":"{\"verdict\":\"pass\",\"reason\":\"aligned\",\"follow_up\":\"\",\"evidence\":[\"configured verification passed\"],\"unmet_requirements\":[],\"missing_evidence\":[]}"}}]}`
 		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(body))}, nil
 	})}
 	reviewer, err := NewOpenAIReviewer(OpenAIReviewerConfig{BaseURL: "http://qwen.internal/v1", Model: "qwen", Client: client})
@@ -107,8 +131,9 @@ func TestOpenAIReviewerUsesBoundedForemanToolsBeforeRequestingFollowUp(t *testin
 		defer mu.Unlock()
 		requests++
 		var payload struct {
-			Tools    []any            `json:"tools"`
-			Messages []map[string]any `json:"messages"`
+			Tools      []any            `json:"tools"`
+			Messages   []map[string]any `json:"messages"`
+			ToolChoice any              `json:"tool_choice"`
 		}
 		if err := json.NewDecoder(request.Body).Decode(&payload); err != nil {
 			t.Fatal(err)
@@ -118,12 +143,17 @@ func TestOpenAIReviewerUsesBoundedForemanToolsBeforeRequestingFollowUp(t *testin
 		}
 		var body string
 		if requests == 1 {
+			choice, ok := payload.ToolChoice.(map[string]any)
+			function, _ := choice["function"].(map[string]any)
+			if !ok || function["name"] != string(SemanticToolInspectTask) {
+				t.Fatalf("final review did not force task inspection: %#v", payload.ToolChoice)
+			}
 			body = `{"choices":[{"message":{"content":"","tool_calls":[{"id":"call-read","type":"function","function":{"name":"inspect_task_state","arguments":"{}"}}]}}]}`
 		} else {
 			if len(payload.Messages) < 4 || payload.Messages[len(payload.Messages)-1]["role"] != "tool" {
 				t.Fatalf("tool result was not returned to model: %#v", payload.Messages)
 			}
-			body = `{"choices":[{"message":{"content":"","tool_calls":[{"id":"call-fix","type":"function","function":{"name":"request_follow_up","arguments":"{\"reason\":\"missing test result\",\"instruction\":\"Run the configured test and report the result.\"}"}}]}}]}`
+			body = `{"choices":[{"message":{"content":"","tool_calls":[{"id":"call-fix","type":"function","function":{"name":"request_follow_up","arguments":"{\"reason\":\"missing test result\",\"instruction\":\"Run the configured test and report the result.\",\"unmet_requirements\":[\"Configured tests must pass.\"],\"evidence\":[\"Task inspection contains no passing command evidence.\"]}"}}]}}]}`
 		}
 		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(body))}, nil
 	})}
@@ -186,7 +216,7 @@ func TestOpenAIReviewerAllowsExplicitOperatorAttentionTool(t *testing.T) {
 		if !found {
 			t.Fatal("operator attention tool was not advertised after explicit opt-in")
 		}
-		body := `{"choices":[{"message":{"tool_calls":[{"id":"attention","type":"function","function":{"name":"request_operator_attention","arguments":"{\"reason\":\"migration target is ambiguous\"}"}}]}}]}`
+		body := `{"choices":[{"message":{"tool_calls":[{"id":"attention","type":"function","function":{"name":"request_operator_attention","arguments":"{\"reason\":\"migration target is ambiguous\",\"evidence\":[\"Trusted instructions name two incompatible migration targets.\"]}"}}]}}]}`
 		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(body))}, nil
 	})}
 	reviewer, err := NewOpenAIReviewer(OpenAIReviewerConfig{
@@ -230,7 +260,7 @@ func TestOpenAIReviewerMidTurnDisablesAttentionAndMarksPhase(t *testing.T) {
 				t.Fatal("operator attention must not be advertised during a mid-turn review")
 			}
 		}
-		body := `{"choices":[{"message":{"tool_calls":[{"id":"redirect","type":"function","function":{"name":"request_follow_up","arguments":"{\"reason\":\"agent is editing the wrong package\",\"instruction\":\"Stop editing package B and implement the requested change in package A.\"}"}}]}}]}`
+		body := `{"choices":[{"message":{"tool_calls":[{"id":"redirect","type":"function","function":{"name":"request_follow_up","arguments":"{\"reason\":\"agent is editing the wrong package\",\"instruction\":\"Stop editing package B and implement the requested change in package A.\",\"unmet_requirements\":[\"Implement the change in package A.\"],\"evidence\":[\"Current output states that package B is being edited.\"]}"}}]}}]}`
 		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(body))}, nil
 	})}
 	reviewer, err := NewOpenAIReviewer(OpenAIReviewerConfig{

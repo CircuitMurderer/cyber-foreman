@@ -99,6 +99,15 @@ export function TaskSummaryModal({task, events}: TaskSummaryModalProps) {
                       <strong>{semanticVerdictLabel(summary.semanticReview.verdict)}</strong>
                     </div>
                   </div>
+                  {summary.semanticReview.evidence.length > 0 && (
+                    <SemanticReviewList title="验收证据" items={summary.semanticReview.evidence} />
+                  )}
+                  {summary.semanticReview.unmetRequirements.length > 0 && (
+                    <SemanticReviewList title="未满足项" items={summary.semanticReview.unmetRequirements} />
+                  )}
+                  {summary.semanticReview.missingEvidence.length > 0 && (
+                    <SemanticReviewList title="缺少的证据" items={summary.semanticReview.missingEvidence} />
+                  )}
                 </section>
               )}
 
@@ -115,6 +124,17 @@ export function TaskSummaryModal({task, events}: TaskSummaryModalProps) {
         </Modal.Container>
       </Modal.Backdrop>
     </Modal>
+  );
+}
+
+function SemanticReviewList({title, items}: {title: string; items: string[]}) {
+  return (
+    <div className="semantic-review-evidence">
+      <strong>{title}</strong>
+      <ul className="summary-tools">
+        {items.map((item, index) => <li key={`${title}-${index}`}>{item}</li>)}
+      </ul>
+    </div>
   );
 }
 
@@ -160,9 +180,17 @@ function buildSummary(events: ForemanEvent[]) {
     tools,
     semanticReview: semanticData?.success === true ? {
       verdict: String(semanticData.verdict || "uncertain"),
-      reason: String(semanticData.reason || "")
+      reason: String(semanticData.reason || ""),
+      evidence: stringList(semanticData.evidence),
+      unmetRequirements: stringList(semanticData.unmet_requirements),
+      missingEvidence: stringList(semanticData.missing_evidence)
     } : undefined
   };
+}
+
+function stringList(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value.map((item) => String(item)).filter(Boolean);
 }
 
 function semanticVerdictLabel(verdict: string): string {

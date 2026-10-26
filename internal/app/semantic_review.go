@@ -67,6 +67,15 @@ func (s *Service) reviewAgentTurn(
 		data["verdict"] = review.Verdict
 		data["reason"] = review.Reason
 		data["follow_up"] = review.FollowUp
+		if len(review.Evidence) > 0 {
+			data["evidence"] = review.Evidence
+		}
+		if len(review.UnmetRequirements) > 0 {
+			data["unmet_requirements"] = review.UnmetRequirements
+		}
+		if len(review.MissingEvidence) > 0 {
+			data["missing_evidence"] = review.MissingEvidence
+		}
 		if review.ToolCall != "" {
 			data["tool_call"] = review.ToolCall
 		}
@@ -166,7 +175,7 @@ func (t *semanticToolbox) inspectTask() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return marshalSemanticToolResult(map[string]any{
+	result := map[string]any{
 		"task_id": task.ID, "kind": task.Kind, "adapter": task.Adapter, "status": task.Status,
 		"supervision_budget_used": t.snapshot.Budget,
 		"supervision_budget_limits": map[string]int{
@@ -177,7 +186,37 @@ func (t *semanticToolbox) inspectTask() (string, error) {
 			"semantic_escalations": t.snapshot.Policy.MaxSemanticEscalations,
 		},
 		"deterministic_verification": semanticVerificationSummary(t.report),
-	})
+	}
+	if t.report.Workspace != nil {
+		changedFiles := make([]string, 0, len(t.report.Workspace.ChangedFiles))
+		for _, file := range t.report.Workspace.ChangedFiles {
+			if len(changedFiles) == 100 {
+				break
+			}
+			changedFiles = append(changedFiles, boundSemanticMetadata(file))
+		}
+		result["workspace_evidence"] = map[string]any{
+			"passed":                  t.report.Workspace.Passed && t.report.WorkspaceError == "",
+			"changed_files":           changedFiles,
+			"changed_files_truncated": len(t.report.Workspace.ChangedFiles) > len(changedFiles),
+			"head_changed":            t.report.Workspace.HeadChanged,
+			"diff_check_passed":       t.report.Workspace.DiffCheckPassed,
+		}
+	}
+	if t.report.Test != nil {
+		commands := make([]map[string]any, 0, len(t.report.Test.Commands))
+		for index, command := range t.report.Test.Commands {
+			commands = append(commands, map[string]any{
+				"index": index + 1, "exit_code": command.ExitCode, "timed_out": command.TimedOut,
+				"duration_ms": command.Duration.Milliseconds(), "has_error": command.Error != "",
+				"output_available": command.Output != "", "output_truncated": command.Truncated,
+			})
+		}
+		result["command_evidence"] = map[string]any{
+			"passed": t.report.Test.Passed, "commands": commands,
+		}
+	}
+	return marshalSemanticToolResult(result)
 }
 
 func (t *semanticToolbox) inspectAgentActivity(limit int) (string, error) {
@@ -417,10 +456,29 @@ func semanticVerificationSummary(report verificationReport) string {
 	}
 	parts := make([]string, 0, 2)
 	if report.Workspace != nil {
-		parts = append(parts, fmt.Sprintf("workspace verification passed=%t", report.Workspace.Passed && report.WorkspaceError == ""))
+		changedFiles := make([]string, 0, min(len(report.Workspace.ChangedFiles), 20))
+		for _, file := range report.Workspace.ChangedFiles {
+			if len(changedFiles) == 20 {
+				changedFiles = append(changedFiles, "(truncated)")
+				break
+			}
+			changedFiles = append(changedFiles, boundSemanticMetadata(file))
+		}
+		parts = append(parts, fmt.Sprintf(
+			"workspace verification passed=%t changed_files=[%s]",
+			report.Workspace.Passed && report.WorkspaceError == "", strings.Join(changedFiles, ", "),
+		))
 	}
 	if report.Test != nil {
-		parts = append(parts, fmt.Sprintf("configured command verification passed=%t", report.Test.Passed))
+		commands := make([]string, 0, len(report.Test.Commands))
+		for index, command := range report.Test.Commands {
+			commands = append(commands, fmt.Sprintf(
+				"#%d exit=%d timed_out=%t has_error=%t", index+1, command.ExitCode, command.TimedOut, command.Error != "",
+			))
+		}
+		parts = append(parts, fmt.Sprintf(
+			"configured command verification passed=%t commands=[%s]", report.Test.Passed, strings.Join(commands, "; "),
+		))
 	}
 	if len(parts) == 0 {
 		return fmt.Sprintf("deterministic verification passed=%t", report.Passed)
@@ -438,11 +496,28 @@ func semanticVerificationSummaryForPhase(report verificationReport, phase superv
 func semanticRedirectPrompt(review supervisor.SemanticReview) string {
 	return "辅助监工在确定性门禁通过后发现当前回复可能偏离任务。请根据以下具体问题继续修正；不要撤销已经正确完成的工作，完成后照常结束本轮。\n\n" +
 		"<review_reason>\n" + review.Reason + "\n</review_reason>\n\n" +
+		"<unmet_requirements>\n" + semanticReviewList(review.UnmetRequirements) + "\n</unmet_requirements>\n\n" +
+		"<review_evidence>\n" + semanticReviewList(review.Evidence) + "\n</review_evidence>\n\n" +
 		"<requested_follow_up>\n" + review.FollowUp + "\n</requested_follow_up>"
 }
 
 func midTurnSemanticRedirectPrompt(review supervisor.SemanticReview) string {
 	return "辅助监工在本轮执行期间发现了明确的方向偏差，因此已中断上一轮。请根据以下具体问题立即调整；保留已经正确完成的工作，继续完成原任务，并在完成后照常结束本轮。\n\n" +
 		"<review_reason>\n" + review.Reason + "\n</review_reason>\n\n" +
+		"<unmet_requirements>\n" + semanticReviewList(review.UnmetRequirements) + "\n</unmet_requirements>\n\n" +
+		"<review_evidence>\n" + semanticReviewList(review.Evidence) + "\n</review_evidence>\n\n" +
 		"<requested_follow_up>\n" + review.FollowUp + "\n</requested_follow_up>"
+}
+
+func semanticReviewList(values []string) string {
+	if len(values) == 0 {
+		return "- 未提供"
+	}
+	var result strings.Builder
+	for _, value := range values {
+		result.WriteString("- ")
+		result.WriteString(value)
+		result.WriteByte('\n')
+	}
+	return strings.TrimSpace(result.String())
 }

@@ -10,6 +10,7 @@ import (
 	"cyber-foreman/internal/domain"
 	"cyber-foreman/internal/event"
 	"cyber-foreman/internal/supervisor"
+	"cyber-foreman/internal/verification"
 )
 
 func TestSemanticToolboxExposesBoundedControlPlaneFactsAndAuditsCalls(t *testing.T) {
@@ -29,7 +30,15 @@ func TestSemanticToolboxExposesBoundedControlPlaneFactsAndAuditsCalls(t *testing
 			TaskID: task.ID, Status: domain.TaskVerifying, Policy: supervisor.DefaultPolicy(),
 			Budget: supervisor.Budget{SemanticRedirects: 1},
 		},
-		report: verificationReport{Required: true, Passed: true},
+		report: verificationReport{
+			Required: true, Passed: true,
+			Workspace: &verification.WorkspaceResult{
+				Passed: true, DiffCheckPassed: true, ChangedFiles: []string{"internal/supervisor/reviewer.go"},
+			},
+			Test: &verification.TestResult{Passed: true, Commands: []verification.CommandResult{{
+				ExitCode: 0, Output: "private test output",
+			}}},
+		},
 	}
 
 	result, err := toolbox.ExecuteSemanticTool(context.Background(), supervisor.SemanticToolInspectTask, json.RawMessage(`{}`))
@@ -38,6 +47,14 @@ func TestSemanticToolboxExposesBoundedControlPlaneFactsAndAuditsCalls(t *testing
 	}
 	if !strings.Contains(result, `"adapter":"opencode"`) || strings.Contains(result, "/secret/workspace") {
 		t.Fatalf("unsafe or incomplete task result: %s", result)
+	}
+	for _, expected := range []string{"internal/supervisor/reviewer.go", `"exit_code":0`, `"output_available":true`} {
+		if !strings.Contains(result, expected) {
+			t.Fatalf("task evidence omitted %q: %s", expected, result)
+		}
+	}
+	if strings.Contains(result, "private test output") {
+		t.Fatalf("task evidence leaked command output: %s", result)
 	}
 	recent, err := toolbox.ExecuteSemanticTool(context.Background(), supervisor.SemanticToolInspectRecentActivity, json.RawMessage(`{"limit":10}`))
 	if err != nil {

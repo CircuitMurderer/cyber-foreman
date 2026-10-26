@@ -397,6 +397,9 @@ select.control { appearance: auto; }
 .summary-checks .passed strong { color: var(--success); }
 .summary-checks .failed strong { color: var(--danger); }
 .summary-tools { display: grid; gap: 7px; margin: 0; padding: 12px 13px 13px 29px; color: var(--muted-strong); font-size: 10px; }
+.semantic-review-evidence { border-top: 1px solid var(--line); padding-top: 9px; }
+.semantic-review-evidence > strong { display: block; padding: 0 13px; color: var(--text-strong); font-size: 10px; }
+.semantic-review-evidence .summary-tools { padding-top: 8px; }
 .diff-dialog { width: min(1080px, calc(100vw - 32px)); height: min(860px, calc(100vh - 48px)); }
 .diff-body { display: grid; grid-template-rows: auto minmax(220px, 1fr) auto; gap: 12px; padding-top: 14px !important; }
 .diff-files { padding: 12px; border: 1px solid var(--line); border-radius: 11px; background: var(--panel); }
